@@ -28,14 +28,24 @@ const normalizeRange = (range) => {
 const initSheets = async () => {
   if (sheets) return sheets;
 
-  if (!fs.existsSync(CREDENTIALS_PATH)) {
-    throw new Error(`Google Credentials file missing at ${CREDENTIALS_PATH}. Please follow the setup instructions.`);
+  const credentialsJson = process.env.GOOGLE_CREDENTIALS_JSON;
+  
+  if (credentialsJson) {
+    // If credentials are provided as a JSON string in the environment variables (e.g. Vercel/Render)
+    auth = new google.auth.GoogleAuth({
+      credentials: JSON.parse(credentialsJson),
+      scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+    });
+  } else {
+    // Fallback to local file path (e.g. local development)
+    if (!fs.existsSync(CREDENTIALS_PATH)) {
+      throw new Error(`Google Credentials missing. Set GOOGLE_CREDENTIALS_JSON env var or provide file at ${CREDENTIALS_PATH}`);
+    }
+    auth = new google.auth.GoogleAuth({
+      keyFile: CREDENTIALS_PATH,
+      scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+    });
   }
-
-  auth = new google.auth.GoogleAuth({
-    keyFile: CREDENTIALS_PATH,
-    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-  });
 
   const client = await auth.getClient();
   sheets = google.sheets({ version: 'v4', auth: client });
