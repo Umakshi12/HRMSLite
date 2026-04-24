@@ -1,0 +1,70 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+  body { @apply bg-gray-50 text-slate-800 font-sans; }
+}
+
+/* Anti-copy protection */
+.anti-copy { user-select: none; -webkit-user-select: none; }
+
+/* Excel table overrides */
+.excel-th {
+  @apply bg-slate-100 border-b-2 border-r border-slate-200 px-3 py-2.5 text-left text-[11px] font-bold uppercase tracking-wider text-slate-500 whitespace-nowrap cursor-pointer select-none sticky top-0 z-10;
+}
+.excel-th:hover { @apply bg-slate-200/70; }
+.excel-td {
+  @apply px-3 py-2 border-b border-r border-slate-100 text-[13px] whitespace-nowrap overflow-hidden text-ellipsis max-w-[200px];
+}
+.excel-row:nth-child(even) { @apply bg-slate-50/50; }
+.excel-row:hover { @apply bg-blue-50/60; }
+
+/* Watermark */
+.watermark-overlay {
+  position: absolute; inset: 0; pointer-events: none; z-index: 5; overflow: hidden; opacity: 0.04;
+}
+.watermark-text {
+  position: absolute; font-size: 13px; font-weight: 700; color: #1e293b;
+  transform: rotate(-45deg); white-space: nowrap; font-family: 'DM Mono', monospace;
+}
+
+/* Search highlight */
+.search-highlight { @apply bg-yellow-200 px-0.5 rounded-sm; }
+
+/* Skeleton shimmer */
+.skeleton {
+  @apply bg-slate-200 rounded animate-pulse;
+}
+
+/* Print blocking */
+@media print {
+  .anti-copy, table, .table-wrap { display: none !important; }
+  body::after {
+    content: "Printing not permitted — Staffurs HRMSLite";
+    display: flex; align-items: center; justify-content: center;
+    height: 100vh; font-size: 24px; color: #dc2626;
+  }
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+/* Shared form input */
+.field-input {
+  @apply w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm outline-none transition
+    focus:border-blue-500 focus:ring-2 focus:ring-blue-100 bg-white;
+}
+
+/* Modal animation */
+.animate-in {
+  animation: modalIn 0.25s ease-out;
+}
+@keyframes modalIn {
+  from { opacity: 0; transform: scale(0.97) translateY(6px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}

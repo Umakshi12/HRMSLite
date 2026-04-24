@@ -1,0 +1,52 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Diagnostic reports (https://nodejs.org/api/report.html)
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Environment Variables (DO NOT COMMIT CREDENTIALS)
+.env
+.env.*
+!.env.example
+credentials.json
+token.json
+backend/credentials.json
+backend/token.json
+frontend/.env
+backend/.env
+workflows
+python_backend
+# Build directories
+frontend/dist/
+frontend/build/
+backend/dist/
+backend/build/
+python_backend/__pycache__/
+*.pyc
+
+# OS Files
+.DS_Store
+Thumbs.db
+All candidate in india.xlsx
+*.xlsx
+backend/google-credentials.json

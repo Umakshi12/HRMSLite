@@ -1,0 +1,30 @@
+{
+  "name": "staffurs-hrms-lite-backend",
+  "version": "1.0.0",
+  "description": "Backend for Staffurs HRMS Lite",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "gaxios": "^7.1.4",
+    "google-auth-library": "^10.6.2",
+    "googleapis": "^171.4.0",
+    "helmet": "^8.0.0",
+    "jsonwebtoken": "^9.0.3",
+    "morgan": "^1.10.0",
+    "nodemailer": "^8.0.6",
+    "uuid": "^14.0.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.7",
+    "prisma": "^5.12.1"
+  }
+}

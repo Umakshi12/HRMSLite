@@ -1,0 +1,53 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String   @id @default(uuid())
+  login_id      String   @unique
+  identifier    String   @unique
+  password      String
+  role          String   @default("User")
+  status        String   @default("active")
+  last_login    DateTime?
+  sheet_access  String   @default("[]") // Stored as JSON string
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+}
+
+model Candidate {
+  id              String   @id @default(uuid())
+  sr_no           Int      @unique
+  name            String
+  address         String?
+  state           String?
+  marital_status  String?
+  timing          String?
+  area            String?
+  experience      String?
+  education       String?
+  dob             String?
+  age             Int?
+  gender          String?
+  salary          Float?
+  mobile          String   @unique
+  verification    String   @default("pending")
+  description     String?
+  since           String?
+  sheet           String
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+}
+
+model ActivityLog {
+  id         String   @id @default(uuid())
+  action     String
+  user       String
+  details    String?
+  timestamp  DateTime @default(now())
+}
