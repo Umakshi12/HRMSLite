@@ -46,6 +46,7 @@ app.get('/health', (req, res) => {
 
 // API Routes
 app.use('/api', apiRoutes);
+app.use('/', apiRoutes); // Add this to handle Vercel's stripped /api prefix
 
 // Error Handling Middleware
 app.use((err, req, res, next) => {
