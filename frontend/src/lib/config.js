@@ -1,5 +1,5 @@
-// Backend Base URL - Use relative path for production (works with Vercel rewrites)
-export const API_BASE = '/api';
+// Backend Base URL - Use VITE_API_URL from Vercel env, fallback to relative /api
+export const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
 export const API = {
   LOGIN:            `${API_BASE}/login`,

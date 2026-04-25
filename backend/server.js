@@ -18,7 +18,7 @@ app.use((req, res, next) => {
 });
 
 const PORT = process.env.PORT || 5000;
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'https://hrms-lite-inky-psi.vercel.app';
 
 if (!process.env.JWT_SECRET) {
   throw new Error('Missing required env: JWT_SECRET');
