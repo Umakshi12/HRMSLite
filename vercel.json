@@ -1,15 +1,10 @@
 {
   "experimentalServices": {
     "frontend": {
-      "entrypoint": "frontend",
-      "runtime": "static-build",
-      "config": {
-        "distDir": "dist"
-      }
+      "entrypoint": "frontend"
     },
     "backend": {
-      "entrypoint": "backend",
-      "runtime": "nodejs"
+      "entrypoint": "backend"
     }
   }
 }
