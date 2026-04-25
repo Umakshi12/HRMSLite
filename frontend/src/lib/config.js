@@ -1,5 +1,5 @@
-// Backend Base URL
-export const API_BASE = import.meta.env.VITE_API_BASE_URL || (import.meta.env.PROD ? '/api' : 'http://localhost:5000/api')
+// Backend Base URL - Use relative path for production (works with Vercel rewrites)
+export const API_BASE = '/api';
 
 export const API = {
   LOGIN:            `${API_BASE}/login`,

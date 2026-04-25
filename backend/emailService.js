@@ -28,7 +28,7 @@ export const sendWelcomeEmail = async (userEmail, loginId, password) => {
           <p style="margin: 5px 0;"><strong>Password:</strong> ${password}</p>
         </div>
         <p>Please log in and change your password immediately for security purposes.</p>
-        <a href="http://localhost:5173" style="display: inline-block; background-color: #2563eb; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">Login Now</a>
+        <a href="${process.env.ALLOWED_ORIGIN || 'http://localhost:5173'}" style="display: inline-block; background-color: #2563eb; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">Login Now</a>
         <p style="margin-top: 30px; font-size: 12px; color: #64748b;">If you did not expect this email, please ignore it.</p>
       </div>
     `,
