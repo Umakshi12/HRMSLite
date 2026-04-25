@@ -1,26 +1,15 @@
 {
-  "version": 2,
-  "builds": [
-    {
-      "src": "frontend/package.json",
-      "use": "@vercel/static-build",
+  "experimentalServices": {
+    "frontend": {
+      "entrypoint": "frontend",
+      "runtime": "static-build",
       "config": {
         "distDir": "dist"
       }
     },
-    {
-      "src": "backend/server.js",
-      "use": "@vercel/node"
+    "backend": {
+      "entrypoint": "backend",
+      "runtime": "nodejs"
     }
-  ],
-  "rewrites": [
-    {
-      "source": "/api/(.*)",
-      "destination": "/backend/server.js/$1"
-    },
-    {
-      "source": "/(.*)",
-      "destination": "/frontend/$1"
-    }
-  ]
+  }
 }
