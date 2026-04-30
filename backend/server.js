@@ -36,9 +36,17 @@ app.use(helmet());
 
 // Improved CORS for local development + production
 const corsOptions = {
-  origin: process.env.NODE_ENV === 'development' 
-    ? [ALLOWED_ORIGIN, 'http://localhost:5173', 'http://127.0.0.1:5173'] 
-    : ALLOWED_ORIGIN,
+  origin: (origin, callback) => {
+    const isLocal = !origin || origin.includes('localhost') || origin.includes('127.0.0.1');
+    const isVercel = origin && origin.endsWith('.vercel.app');
+    const isAllowed = origin === ALLOWED_ORIGIN;
+    
+    if (isLocal || isVercel || isAllowed) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   credentials: true
 };

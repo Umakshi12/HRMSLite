@@ -245,6 +245,13 @@ router.post('/spreadsheets/sync-all', requireAuth, isSuperAdmin, asyncHandler(as
   res.json({ success: true, message: 'Scheduled sync complete' });
 }));
 
+// Vercel Cron Trigger (Once per day for Hobby plan)
+router.get('/cron/sync-spreadsheets', asyncHandler(async (req, res) => {
+  console.log('[Cron] Triggered via Vercel');
+  const result = await db.syncAllActiveSpreadsheets();
+  res.json(result);
+}));
+
 // ── Advanced CSV Import Wizard ──
 
 // Step 1: Preview (Get headers and first 5 rows)

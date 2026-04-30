@@ -1461,12 +1461,31 @@ class ProductionDatabase {
             'true',
             'System',
             new Date().toISOString(),
+            '0', // candidate_count
+            '0'  // verified_count
           ];
-          await sheetsAPI.appendRow('google_sheets!A:K', row);
+          await sheetsAPI.appendRow('google_sheets!A:M', row);
         }
       }
     } catch (e) {
       console.error('autoRegisterPrimarySheets error:', e.message);
+    }
+  }
+
+  async syncAllActiveSpreadsheets() {
+    try {
+      const spreadsheets = await this.getRegisteredSpreadsheets();
+      const active = spreadsheets.filter(s => s.is_active);
+      const results = [];
+      for (const ss of active) {
+        results.push(await this.syncSpreadsheet(ss.sheet_id));
+        // Small delay to avoid Google rate limits
+        await new Promise(r => setTimeout(r, 250));
+      }
+      return { success: true, results };
+    } catch (e) {
+      console.error('syncAllActiveSpreadsheets error:', e);
+      return { success: false, message: e.message };
     }
   }
 
