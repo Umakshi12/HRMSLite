@@ -1,6 +1,7 @@
 {
   "name": "staffurs-hrms-lite-root",
   "private": true,
+  "type": "module",
   "scripts": {
     "install:frontend": "cd frontend && npm install",
     "install:backend": "cd backend && npm install",
