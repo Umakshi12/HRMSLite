@@ -147,6 +147,10 @@ export async function syncSpreadsheet(spreadsheet_id) {
   return await apiFetch(`${API.SPREADSHEETS}/${encodeURIComponent(spreadsheet_id)}/sync`, { method: 'POST' })
 }
 
+export async function syncAllSpreadsheets() {
+  return await apiFetch(`${API.SPREADSHEETS}/sync-all`, { method: 'POST' })
+}
+
 export async function getSpreadsheetData(spreadsheet_id) {
   return await apiFetch(`${API.SPREADSHEETS}/${encodeURIComponent(spreadsheet_id)}/data`, { method: 'GET' })
 }

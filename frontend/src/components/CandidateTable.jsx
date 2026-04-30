@@ -2,7 +2,7 @@ import { useMemo, useCallback, useEffect, useState, useRef } from 'react'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { useReactTable, getCoreRowModel, getSortedRowModel, flexRender } from '@tanstack/react-table'
 import useStore from '../lib/store'
-import { applyFilters, removeCandidate, getFilterOptions, getSpreadsheets } from '../lib/api'
+import { applyFilters, removeCandidate, getFilterOptions, getSpreadsheets, syncSpreadsheet } from '../lib/api'
 import { Pencil, ArrowUpDown, ChevronLeft, ChevronRight, RefreshCw, Trash2, Filter, X, Eye, FileUp, Phone, MessageCircle } from 'lucide-react'
 import { toast } from 'sonner'
 import CSVImportWizard from './CSVImportWizard'
@@ -116,12 +116,40 @@ const FILTERABLE = {
   added_by: 'Modified By',
 }
 
+// ── Column Priority Map ──
+const COLUMN_PRIORITY = {
+  sr_no: 1,
+  name: 2,
+  mobile: 3,
+  area: 4,
+  experience: 5,
+  salary: 6,
+  verification: 7,
+  education: 8,
+  gender: 9,
+  age: 10,
+  dob: 11,
+  address: 12,
+  state: 13,
+  marital_status: 14,
+  timing: 15,
+  since: 16,
+  added_by: 17,
+  last_updated: 18,
+  last_message: 19,
+  description: 20
+};
+
+const getColPriority = (key) => COLUMN_PRIORITY[key] || 999;
+
+
 export default function CandidateTable({ onEdit }) {
   const { activeSheet, searchQuery, searchAllSheets, filters, setFilters } = useStore()
   const [sorting, setSorting] = useState([{ id: 'last_updated', desc: true }])
   const [page, setPage] = useState(1)
   const [descPopup, setDescPopup] = useState(null)
   const [showImportWizard, setShowImportWizard] = useState(false)
+  const [syncing, setSyncing] = useState(false)
   const qc = useQueryClient()
 
   // Fetch filter options for inline dropdowns
@@ -180,6 +208,26 @@ export default function CandidateTable({ onEdit }) {
   }, [filters, setFilters])
 
   const activeFilterCount = Object.values(filters).filter(v => Array.isArray(v) ? v.length : v).length
+
+  const dynamicSheet = useMemo(() => {
+    if (!spreadsheets || searchAllSheets) return null;
+    return spreadsheets.find(s => s.name === activeSheet && s.is_active);
+  }, [spreadsheets, activeSheet, searchAllSheets]);
+
+  const handleRefresh = async () => {
+    if (dynamicSheet) {
+      try {
+        setSyncing(true);
+        const res = await syncSpreadsheet(dynamicSheet.sheet_id);
+        toast.success(`Synced ${res.rows_synced} rows from Google Drive`);
+      } catch (err) {
+        toast.error('Sync failed: ' + err.message);
+      } finally {
+        setSyncing(false);
+      }
+    }
+    qc.invalidateQueries({ queryKey: ['sheet-data'] });
+  };
 
   const COLUMNS = useMemo(() => [
     { accessorKey: 'sr_no', header: 'Sr.', size: 50, meta: { className: 'font-mono text-xs text-slate-400 text-center' } },
@@ -353,27 +401,56 @@ export default function CandidateTable({ onEdit }) {
     },
   ], [])
 
-  const dynamicSheet = useMemo(() => {
-    if (!spreadsheets || searchAllSheets) return null;
-    return spreadsheets.find(s => s.name === activeSheet && s.is_active);
-  }, [spreadsheets, activeSheet, searchAllSheets]);
+  const sortedCOLUMNS = useMemo(() => {
+    return [...COLUMNS].sort((a, b) => getColPriority(a.accessorKey) - getColPriority(b.accessorKey));
+  }, [COLUMNS]);
 
   const columns = useMemo(() => {
     if (dynamicSheet && dynamicSheet.columns && dynamicSheet.columns.length > 0) {
-      return dynamicSheet.columns.map((col) => ({
+      // Sort dynamic columns by priority
+      const sortedDynamicCols = [...dynamicSheet.columns].sort((a, b) => {
+        const keyA = a.name || a;
+        const keyB = b.name || b;
+        return getColPriority(keyA) - getColPriority(keyB);
+      });
+
+      return sortedDynamicCols.map((col) => ({
         accessorKey: col.name || col,
         header: col.name || col,
         size: 150,
         cell: ({ getValue }) => {
           const v = getValue();
           if (v === undefined || v === null || v === '') return <span className="text-slate-300">—</span>;
+          
+          // Re-apply special formatting for mobile if this is the mobile column
+          const colName = (col.name || col).toLowerCase();
+          if (colName === 'mobile' || colName === 'mobile_no' || colName === 'phone') {
+            const num = v;
+            const cleanNum = String(num).replace(/\D/g, '');
+            const waNum = cleanNum.length === 10 ? '91' + cleanNum : cleanNum;
+            return (
+              <div className="flex items-center gap-2 group">
+                <span className="font-mono text-[11px] text-slate-600 min-w-[80px]">{num}</span>
+                <div className="flex items-center gap-1.5">
+                  <a href={`tel:${cleanNum}`} className="w-6 h-6 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center hover:bg-blue-600 hover:text-white transition-all duration-200" title={`Call ${num}`}>
+                    <Phone className="w-3 h-3" />
+                  </a>
+                  <a href={`https://wa.me/${waNum}`} target="_blank" rel="noopener noreferrer" className="w-6 h-6 rounded-lg bg-green-50 text-green-600 flex items-center justify-center hover:bg-green-600 hover:text-white transition-all duration-200" title={`WhatsApp ${num}`}>
+                    <MessageCircle className="w-3 h-3" />
+                  </a>
+                </div>
+              </div>
+            );
+          }
+
           return <span className="truncate max-w-[200px] inline-block">{String(v)}</span>;
         }
       }));
     }
 
     return [
-      ...COLUMNS,
+      ...sortedCOLUMNS,
+
       {
         id: 'actions',
         header: '',
@@ -404,7 +481,7 @@ export default function CandidateTable({ onEdit }) {
         ),
       },
     ];
-  }, [onEdit, activeSheet, removeMut, COLUMNS, dynamicSheet])
+  }, [onEdit, activeSheet, removeMut, sortedCOLUMNS, dynamicSheet])
 
   const table = useReactTable({
     data: rows,
@@ -435,7 +512,7 @@ export default function CandidateTable({ onEdit }) {
           <p className="text-xs text-slate-500 font-medium">
             Showing <strong className="text-slate-700">{rows.length}</strong> of <strong className="text-slate-700">{total}</strong> candidates
           </p>
-          {isFetching && <RefreshCw className="w-3.5 h-3.5 text-blue-500 animate-spin" />}
+          {(isFetching || syncing) && <RefreshCw className="w-3.5 h-3.5 text-blue-500 animate-spin" />}
           {activeFilterCount > 0 && (
             <button
               onClick={() => setFilters({})}
@@ -457,10 +534,10 @@ export default function CandidateTable({ onEdit }) {
             className="w-8 h-8 rounded-lg border border-slate-200 flex items-center justify-center hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition cursor-pointer">
             <ChevronRight className="w-4 h-4" />
           </button>
-          <button onClick={() => qc.invalidateQueries({ queryKey: ['sheet-data'] })}
-            className="ml-2 w-8 h-8 rounded-lg border border-slate-200 flex items-center justify-center hover:bg-blue-50 text-slate-400 hover:text-blue-500 transition cursor-pointer"
-            title="Refresh">
-            <RefreshCw className="w-3.5 h-3.5" />
+          <button onClick={handleRefresh} disabled={syncing}
+            className={`ml-2 w-8 h-8 rounded-lg border border-slate-200 flex items-center justify-center transition cursor-pointer ${syncing ? 'bg-blue-50 text-blue-500 border-blue-200' : 'hover:bg-blue-50 text-slate-400 hover:text-blue-500'}`}
+            title="Sync & Refresh">
+            <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
           </button>
           <button
             onClick={() => setShowImportWizard(true)}

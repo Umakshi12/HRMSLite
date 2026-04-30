@@ -2,7 +2,7 @@ import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { 
   getSpreadsheets, addSpreadsheet, removeSpreadsheet, 
-  syncSpreadsheet, getSpreadsheetData, getUsers, 
+  syncSpreadsheet, syncAllSpreadsheets, getSpreadsheetData, getUsers, 
   getSheetGrants, updateSheetGrants 
 } from '../lib/api'
 import { 
@@ -21,6 +21,7 @@ export default function SpreadsheetManager() {
   const [page, setPage] = useState(1)
   const [userSearch, setUserSearch] = useState('')
   const [selectedUserIds, setSelectedUserIds] = useState([])
+  const [syncingAll, setSyncingAll] = useState(false)
   const rowsPerPage = 100
 
   const { data, isLoading, refetch } = useQuery({
@@ -139,9 +140,28 @@ export default function SpreadsheetManager() {
           <h2 className="text-xl font-bold text-slate-800">Dynamic Spreadsheet Integration</h2>
           <p className="text-sm text-slate-400 mt-1">Connect spreadsheets. Data is automatically synced and cached for performance.</p>
         </div>
-        <button onClick={() => refetch()} className="w-8 h-8 rounded-lg border border-slate-200 flex items-center justify-center text-slate-400 hover:text-blue-500 hover:bg-blue-50 transition">
-          <RefreshCw className="w-4 h-4" />
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={async () => {
+            try {
+              setSyncingAll(true);
+              await syncAllSpreadsheets();
+              toast.success('Triggered sync for all active sheets');
+              refetch();
+            } catch (err) {
+              toast.error('Sync all failed: ' + err.message);
+            } finally {
+              setSyncingAll(false);
+            }
+          }} disabled={syncingAll}
+            className={`flex items-center gap-2 px-3 h-8 rounded-lg border text-xs font-bold transition ${syncingAll ? 'bg-blue-50 border-blue-200 text-blue-600' : 'border-slate-200 text-slate-500 hover:bg-slate-50'}`}
+            title="Sync All Active Sheets">
+            <RefreshCw className={`w-3.5 h-3.5 ${syncingAll ? 'animate-spin' : ''}`} />
+            {syncingAll ? 'Syncing...' : 'Sync All'}
+          </button>
+          <button onClick={() => refetch()} className="w-8 h-8 rounded-lg border border-slate-200 flex items-center justify-center text-slate-400 hover:text-blue-500 hover:bg-blue-50 transition" title="Refresh List">
+            <RefreshCw className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
       {/* Add new spreadsheet */}

@@ -934,7 +934,7 @@ class ProductionDatabase {
     try {
       const rowIndex = await sheetsAPI.findRowIndex('google_sheets', 'sheet_id', sheet_id);
       if (rowIndex === -1) return { success: false, message: 'Spreadsheet not found in database' };
-      const rows = await sheetsAPI.getSheetData('google_sheets!A:K');
+      const rows = await sheetsAPI.getSheetData('google_sheets!A:M');
       const row = rows[rowIndex];
       row[8] = 'false'; // is_active
       await sheetsAPI.updateRow('google_sheets', rowIndex, row);
@@ -950,7 +950,7 @@ class ProductionDatabase {
       const rowIndex = await sheetsAPI.findRowIndex('google_sheets', 'sheet_id', sheet_id);
       if (rowIndex === -1) return { success: false, message: 'Spreadsheet not found in database' };
       
-      const rows = await sheetsAPI.getSheetData('google_sheets!A:K');
+      const rows = await sheetsAPI.getSheetData('google_sheets!A:M');
       const row = rows[rowIndex];
       const tab_name = row[4];
       
