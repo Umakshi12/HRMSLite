@@ -414,7 +414,7 @@ export default function CandidateTable({ onEdit }) {
         return getColPriority(keyA) - getColPriority(keyB);
       });
 
-      return sortedDynamicCols.map((col) => ({
+      const dynamicCols = sortedDynamicCols.map((col) => ({
         accessorKey: col.name || col,
         header: col.name || col,
         size: 150,
@@ -446,6 +446,39 @@ export default function CandidateTable({ onEdit }) {
           return <span className="truncate max-w-[200px] inline-block">{String(v)}</span>;
         }
       }));
+
+      return [
+        ...dynamicCols,
+        {
+          id: 'actions',
+          header: '',
+          size: 80,
+          cell: ({ row }) => (
+            <div className="flex items-center gap-1">
+              <button
+                onClick={(e) => { e.stopPropagation(); onEdit(row.original) }}
+                className="w-7 h-7 rounded-lg hover:bg-blue-50 flex items-center justify-center text-blue-500 transition cursor-pointer"
+                title="Edit"
+              >
+                <Pencil className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (window.confirm(`Are you sure you want to remove ${row.original.name}?`)) {
+                    removeMut.mutate({ sr_no: row.original.sr_no, sheet: activeSheet || row.original.sheet, user: 'System' })
+                  }
+                }}
+                disabled={removeMut.isPending}
+                className="w-7 h-7 rounded-lg hover:bg-red-50 flex items-center justify-center text-red-500 transition cursor-pointer disabled:opacity-50"
+                title="Remove"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ),
+        },
+      ];
     }
 
     return [
