@@ -114,12 +114,126 @@ export async function getUsers() {
   return await apiFetch(API.GET_USERS)
 }
 
+export async function updateUserLimit(target_login_id, max_users) {
+  return await apiFetch(API.UPDATE_USER_LIMIT, { method: 'PUT', body: JSON.stringify({ target_login_id, max_users }) })
+}
+
 export async function getFilterOptions(sheet) {
   return await apiFetch(`${API.GET_FILTER_OPTIONS}?sheet=${encodeURIComponent(sheet || 'all')}`)
 }
 
 export async function getActivityLog(params) {
   return await apiFetch(`${API.GET_ACTIVITY_LOG}?${new URLSearchParams(params)}`)
+}
+
+// ── Spreadsheet Registry ──
+export async function getAdminDashboard() {
+  return await apiFetch(API.ADMIN_DASHBOARD)
+}
+
+export async function getSpreadsheets() {
+  return await apiFetch(API.SPREADSHEETS)
+}
+
+export async function addSpreadsheet(spreadsheet_id, name) {
+  return await apiFetch(API.SPREADSHEETS, { method: 'POST', body: JSON.stringify({ spreadsheet_id, name }) })
+}
+
+export async function removeSpreadsheet(spreadsheet_id) {
+  return await apiFetch(`${API.SPREADSHEETS}/${encodeURIComponent(spreadsheet_id)}`, { method: 'DELETE' })
+}
+
+export async function syncSpreadsheet(spreadsheet_id) {
+  return await apiFetch(`${API.SPREADSHEETS}/${encodeURIComponent(spreadsheet_id)}/sync`, { method: 'POST' })
+}
+
+export async function getSpreadsheetData(spreadsheet_id) {
+  return await apiFetch(`${API.SPREADSHEETS}/${encodeURIComponent(spreadsheet_id)}/data`, { method: 'GET' })
+}
+
+export async function getSheetGrants(sheet_id) {
+  return await apiFetch(`${API.SPREADSHEETS}/${encodeURIComponent(sheet_id)}/grants`, { method: 'GET' })
+}
+
+export async function updateSheetGrants(sheet_id, user_ids) {
+  return await apiFetch(`${API.SPREADSHEETS}/${encodeURIComponent(sheet_id)}/grants`, { 
+    method: 'POST', 
+    body: JSON.stringify({ user_ids }) 
+  })
+}
+
+// ── Bulk Import ──
+export async function bulkImportCSV(sheet, file, onProgress) {
+  const token = useStore.getState().token
+  const formData = new FormData()
+  formData.append('file', file)
+  formData.append('sheet', sheet)
+  const res = await fetch(API.BULK_IMPORT, {
+    method: 'POST',
+    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    body: formData,
+  })
+  handleUnauth(res)
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.message || `Import failed: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function importPreview(file) {
+  const token = useStore.getState().token
+  const formData = new FormData()
+  formData.append('file', file)
+  const res = await fetch(API.IMPORT_PREVIEW, {
+    method: 'POST',
+    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    body: formData,
+  })
+  handleUnauth(res)
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.message || `Preview failed: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function importValidate(file, mapping, sheet) {
+  const token = useStore.getState().token
+  const formData = new FormData()
+  formData.append('file', file)
+  formData.append('mapping', JSON.stringify(mapping))
+  formData.append('sheet', sheet)
+  const res = await fetch(API.IMPORT_VALIDATE, {
+    method: 'POST',
+    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    body: formData,
+  })
+  handleUnauth(res)
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.message || `Validation failed: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function importFinal(file, mapping, sheet) {
+  const token = useStore.getState().token
+  const formData = new FormData()
+  formData.append('file', file)
+  formData.append('mapping', JSON.stringify(mapping))
+  formData.append('sheet', sheet)
+  const res = await fetch(API.IMPORT_CSV, {
+    method: 'POST',
+    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    body: formData,
+  })
+  handleUnauth(res)
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.message || `Import failed: ${res.status}`)
+  }
+  return res.json()
 }
 
 // ── SSE Search Stream (falls back to client-side Fuse.js in CandidateTable) ──

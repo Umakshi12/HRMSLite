@@ -9,5 +9,9 @@
     "dev:backend": "cd backend && npm run dev",
     "build": "cd frontend && npm run build",
     "preview": "cd frontend && npm run preview"
+  },
+  "dependencies": {
+    "csv-parse": "^6.2.1",
+    "multer": "^2.1.1"
   }
 }

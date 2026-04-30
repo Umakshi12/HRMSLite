@@ -2,9 +2,10 @@ import { useMemo, useCallback, useEffect, useState, useRef } from 'react'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { useReactTable, getCoreRowModel, getSortedRowModel, flexRender } from '@tanstack/react-table'
 import useStore from '../lib/store'
-import { applyFilters, removeCandidate, getFilterOptions } from '../lib/api'
-import { Pencil, ArrowUpDown, ChevronLeft, ChevronRight, RefreshCw, Trash2, Filter, X, Eye } from 'lucide-react'
+import { applyFilters, removeCandidate, getFilterOptions, getSpreadsheets } from '../lib/api'
+import { Pencil, ArrowUpDown, ChevronLeft, ChevronRight, RefreshCw, Trash2, Filter, X, Eye, FileUp, Phone, MessageCircle } from 'lucide-react'
 import { toast } from 'sonner'
+import CSVImportWizard from './CSVImportWizard'
 
 const PAGE_SIZE = 100
 
@@ -112,13 +113,15 @@ const FILTERABLE = {
   education: 'Education',
   verification: 'Verification',
   area: 'Area',
+  added_by: 'Modified By',
 }
 
 export default function CandidateTable({ onEdit }) {
   const { activeSheet, searchQuery, searchAllSheets, filters, setFilters } = useStore()
-  const [sorting, setSorting] = useState([])
+  const [sorting, setSorting] = useState([{ id: 'last_updated', desc: true }])
   const [page, setPage] = useState(1)
   const [descPopup, setDescPopup] = useState(null)
+  const [showImportWizard, setShowImportWizard] = useState(false)
   const qc = useQueryClient()
 
   // Fetch filter options for inline dropdowns
@@ -126,6 +129,13 @@ export default function CandidateTable({ onEdit }) {
     queryKey: ['filter-options', activeSheet],
     queryFn: () => getFilterOptions(activeSheet),
     staleTime: 5 * 60 * 1000,
+  })
+
+  // Fetch dynamic spreadsheets registry
+  const { data: spreadsheets } = useQuery({
+    queryKey: ['spreadsheets'],
+    queryFn: getSpreadsheets,
+    placeholderData: [],
   })
 
   const removeMut = useMutation({
@@ -185,7 +195,47 @@ export default function CandidateTable({ onEdit }) {
     { accessorKey: 'age', header: 'Age', size: 50, meta: { className: 'font-mono text-center' } },
     { accessorKey: 'gender', header: 'Gender', size: 75, cell: ({ getValue }) => <span className="capitalize">{getValue()}</span> },
     { accessorKey: 'salary', header: 'Salary ₹', size: 85, cell: ({ getValue }) => { const v = getValue(); return v === 0 || !v ? '—' : `₹${Number(v).toLocaleString()}` }, meta: { className: 'font-mono' } },
-    { accessorKey: 'mobile', header: 'Mobile No', size: 110, meta: { className: 'font-mono text-xs' } },
+    { 
+      accessorKey: 'mobile', 
+      header: 'Mobile No', 
+      size: 150, 
+      cell: ({ getValue }) => {
+        const num = getValue()
+        if (!num) return <span className="text-slate-300">—</span>
+        
+        // Clean number: remove non-digits
+        const cleanNum = String(num).replace(/\D/g, '')
+        // For WhatsApp, prepend 91 if it's a 10-digit Indian number
+        const waNum = cleanNum.length === 10 ? '91' + cleanNum : cleanNum
+
+        return (
+          <div className="flex items-center gap-2 group">
+            <span className="font-mono text-[11px] text-slate-600 min-w-[80px]">{num}</span>
+            <div className="flex items-center gap-1.5">
+              <a
+                href={`tel:${cleanNum}`}
+                className="w-6 h-6 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center hover:bg-blue-600 hover:text-white transition-all duration-200"
+                title={`Call ${num}`}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <Phone className="w-3 h-3" />
+              </a>
+              <a
+                href={`https://wa.me/${waNum}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="w-6 h-6 rounded-lg bg-green-50 text-green-600 flex items-center justify-center hover:bg-green-600 hover:text-white transition-all duration-200"
+                title={`WhatsApp ${num}`}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <MessageCircle className="w-3 h-3" />
+              </a>
+            </div>
+          </div>
+        )
+      },
+      meta: { className: 'font-mono' } 
+    },
     { accessorKey: 'verification', header: 'Verification', size: 95, cell: ({ getValue }) => {
       const v = getValue()
       const cls = v === 'verified' ? 'bg-green-50 text-green-600' : v === 'pending' ? 'bg-amber-50 text-amber-600' : 'bg-red-50 text-red-500'
@@ -213,40 +263,148 @@ export default function CandidateTable({ onEdit }) {
       }
     },
     { accessorKey: 'since', header: 'Since', size: 90, meta: { className: 'font-mono text-xs' } },
+    {
+      accessorKey: 'added_by',
+      header: 'Added/Modified By',
+      size: 150,
+      cell: ({ getValue }) => {
+        const v = getValue()
+        if (!v) return <span className="text-slate-300">—</span>
+        
+        // Extract initials (up to 2 letters)
+        const initials = String(v)
+          .split(/[\s_.]+/)
+          .map(word => word[0])
+          .join('')
+          .substring(0, 2)
+          .toUpperCase();
+
+        return (
+          <div className="flex items-center gap-2 group" title={v}>
+            <div className="w-6 h-6 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-[10px] font-bold flex-shrink-0">
+              {initials}
+            </div>
+            <span className="text-xs text-slate-600 font-medium truncate max-w-[100px] cursor-help border-b border-dashed border-slate-300 group-hover:border-blue-400 group-hover:text-blue-600 transition">
+              {v}
+            </span>
+          </div>
+        )
+      }
+    },
+    {
+      accessorKey: 'last_updated',
+      header: 'Updated On',
+      size: 130,
+      cell: ({ getValue }) => {
+        const v = getValue()
+        if (!v) return <span className="text-slate-300">—</span>
+        try {
+          const d = new Date(v)
+          if (isNaN(d.getTime())) return <span className="font-mono text-xs">{v}</span>
+          
+          // Calculate relative time
+          const now = new Date()
+          const diffMs = now - d
+          const diffMins = Math.floor(diffMs / 60000)
+          const diffHours = Math.floor(diffMins / 60)
+          const diffDays = Math.floor(diffHours / 24)
+          
+          let relative = ''
+          if (diffMins < 1) relative = 'Just now'
+          else if (diffMins < 60) relative = `${diffMins} min${diffMins > 1 ? 's' : ''} ago`
+          else if (diffHours < 24) relative = `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`
+          else if (diffDays === 1) relative = 'Yesterday'
+          else if (diffDays < 7) relative = `${diffDays} days ago`
+          else relative = d.toLocaleDateString('en-GB')
+            
+          const exact = `${d.toLocaleDateString('en-GB')} ${d.toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit'})}`
+          
+          return (
+            <span className="font-mono text-xs text-slate-600 cursor-help border-b border-dashed border-slate-300 hover:border-blue-400 hover:text-blue-600 transition" title={exact}>
+              {relative}
+            </span>
+          )
+        } catch { return <span className="font-mono text-xs">{v}</span> }
+      }
+    },
+    {
+      accessorKey: 'last_message',
+      header: 'Last Conversation',
+      size: 180,
+      cell: ({ getValue }) => {
+        const val = getValue()
+        if (!val) return <span className="text-slate-300">—</span>
+        
+        const snippet = val.length > 80 ? val.substring(0, 80) + '...' : val;
+        
+        return (
+          <div className="flex items-center gap-1 group">
+            <div className="truncate max-w-[140px] text-[11px] text-slate-600 cursor-help" title={val}>{snippet}</div>
+            <button
+              onClick={(e) => { e.stopPropagation(); setDescPopup(val) }}
+              className="w-5 h-5 rounded flex items-center justify-center text-slate-300 hover:text-blue-500 hover:bg-blue-50 opacity-0 group-hover:opacity-100 transition cursor-pointer flex-shrink-0"
+              title="View full conversation"
+            >
+              <Eye className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )
+      }
+    },
   ], [])
 
-  const columns = useMemo(() => [
-    ...COLUMNS,
-    {
-      id: 'actions',
-      header: '',
-      size: 80,
-      cell: ({ row }) => (
-        <div className="flex items-center gap-1">
-          <button
-            onClick={(e) => { e.stopPropagation(); onEdit(row.original) }}
-            className="w-7 h-7 rounded-lg hover:bg-blue-50 flex items-center justify-center text-blue-500 transition cursor-pointer"
-            title="Edit"
-          >
-            <Pencil className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              if (window.confirm(`Are you sure you want to remove ${row.original.name}?`)) {
-                removeMut.mutate({ sr_no: row.original.sr_no, sheet: activeSheet || row.original.sheet, user: 'System' })
-              }
-            }}
-            disabled={removeMut.isPending}
-            className="w-7 h-7 rounded-lg hover:bg-red-50 flex items-center justify-center text-red-500 transition cursor-pointer disabled:opacity-50"
-            title="Remove"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-          </button>
-        </div>
-      ),
-    },
-  ], [onEdit, activeSheet, removeMut, COLUMNS])
+  const dynamicSheet = useMemo(() => {
+    if (!spreadsheets || searchAllSheets) return null;
+    return spreadsheets.find(s => s.name === activeSheet && s.is_active);
+  }, [spreadsheets, activeSheet, searchAllSheets]);
+
+  const columns = useMemo(() => {
+    if (dynamicSheet && dynamicSheet.columns && dynamicSheet.columns.length > 0) {
+      return dynamicSheet.columns.map((col) => ({
+        accessorKey: col.name || col,
+        header: col.name || col,
+        size: 150,
+        cell: ({ getValue }) => {
+          const v = getValue();
+          if (v === undefined || v === null || v === '') return <span className="text-slate-300">—</span>;
+          return <span className="truncate max-w-[200px] inline-block">{String(v)}</span>;
+        }
+      }));
+    }
+
+    return [
+      ...COLUMNS,
+      {
+        id: 'actions',
+        header: '',
+        size: 80,
+        cell: ({ row }) => (
+          <div className="flex items-center gap-1">
+            <button
+              onClick={(e) => { e.stopPropagation(); onEdit(row.original) }}
+              className="w-7 h-7 rounded-lg hover:bg-blue-50 flex items-center justify-center text-blue-500 transition cursor-pointer"
+              title="Edit"
+            >
+              <Pencil className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                if (window.confirm(`Are you sure you want to remove ${row.original.name}?`)) {
+                  removeMut.mutate({ sr_no: row.original.sr_no, sheet: activeSheet || row.original.sheet, user: 'System' })
+                }
+              }}
+              disabled={removeMut.isPending}
+              className="w-7 h-7 rounded-lg hover:bg-red-50 flex items-center justify-center text-red-500 transition cursor-pointer disabled:opacity-50"
+              title="Remove"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        ),
+      },
+    ];
+  }, [onEdit, activeSheet, removeMut, COLUMNS, dynamicSheet])
 
   const table = useReactTable({
     data: rows,
@@ -304,6 +462,14 @@ export default function CandidateTable({ onEdit }) {
             title="Refresh">
             <RefreshCw className="w-3.5 h-3.5" />
           </button>
+          <button
+            onClick={() => setShowImportWizard(true)}
+            className="ml-1 px-3 h-8 rounded-lg bg-blue-600 text-white flex items-center justify-center gap-1.5 hover:bg-blue-700 transition cursor-pointer text-xs font-bold shadow-sm shadow-blue-100"
+            title="Import CSV"
+          >
+            <FileUp className="w-3.5 h-3.5" />
+            Import CSV
+          </button>
         </div>
       </div>
 
@@ -357,7 +523,7 @@ export default function CandidateTable({ onEdit }) {
                               <ArrowUpDown className={`w-3 h-3 ${header.column.getIsSorted() ? 'text-blue-500 opacity-100' : 'opacity-30'}`} />
                             )}
                           </span>
-                          {isFilterable && opts.length > 0 && (
+                          {(!dynamicSheet && isFilterable && opts.length > 0) && (
                             <HeaderFilter
                               column={colKey}
                               label={FILTERABLE[colKey]}
@@ -390,6 +556,9 @@ export default function CandidateTable({ onEdit }) {
 
       {/* Description Popup */}
       {descPopup && <DescriptionPopup text={descPopup} onClose={() => setDescPopup(null)} />}
+
+      {/* CSV Import Wizard */}
+      {showImportWizard && <CSVImportWizard onClose={() => setShowImportWizard(false)} />}
     </div>
   )
 }

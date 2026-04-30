@@ -8,7 +8,7 @@ import { getSheets } from '../lib/mockData'
 import { INDIAN_STATES, EXPERIENCE_OPTIONS, EDUCATION_OPTIONS, TIMING_OPTIONS, MARITAL_OPTIONS, GENDER_OPTIONS, VERIFICATION_OPTIONS } from '../lib/config'
 import useStore from '../lib/store'
 import { toast } from 'sonner'
-import { X } from 'lucide-react'
+import { X, Phone, MessageCircle } from 'lucide-react'
 import { format } from 'date-fns'
 
 export default function CandidateModal({ editData, onClose }) {
@@ -98,7 +98,31 @@ export default function CandidateModal({ editData, onClose }) {
             </Field>
 
             <Field label="Mobile No. *" error={errors.mobile}>
-              <input {...register('mobile')} placeholder="10-digit number" maxLength={10} className="field-input" />
+              <div className="relative group/mobile">
+                <input {...register('mobile')} placeholder="10-digit number" maxLength={10} className="field-input pr-20" />
+                <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-1.5 opacity-0 group-hover/mobile:opacity-100 transition-opacity">
+                  {watch('mobile') && watch('mobile').length >= 10 && (
+                    <>
+                      <a
+                        href={`tel:${watch('mobile')}`}
+                        className="w-7 h-7 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center hover:bg-blue-600 hover:text-white transition-all duration-200"
+                        title="Call now"
+                      >
+                        <Phone className="w-3.5 h-3.5" />
+                      </a>
+                      <a
+                        href={`https://wa.me/${watch('mobile').length === 10 ? '91' + watch('mobile') : watch('mobile')}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="w-7 h-7 rounded-lg bg-green-50 text-green-600 flex items-center justify-center hover:bg-green-600 hover:text-white transition-all duration-200"
+                        title="Open WhatsApp"
+                      >
+                        <MessageCircle className="w-3.5 h-3.5" />
+                      </a>
+                    </>
+                  )}
+                </div>
+              </div>
             </Field>
 
             <Field label="Gender *" error={errors.gender}>

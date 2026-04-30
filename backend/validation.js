@@ -27,6 +27,14 @@ export const addCandidateSchema = z.object({
   added_by: z.any().optional()
 });
 
+export const grantAccessSchema = z.object({
+  identifier:   z.string().min(1, 'Email or phone required'),
+  role:         z.enum(['User', 'Admin']).default('User'),
+  sheet_access: z.array(z.string()).default([]),
+  notes:        z.string().optional().default(''),
+  max_users:    z.coerce.number().min(1).max(500).optional().default(10),
+})
+
 export const validateRequest = (schema) => (req, res, next) => {
   try {
     schema.parse(req.body);
@@ -39,3 +47,4 @@ export const validateRequest = (schema) => (req, res, next) => {
     });
   }
 };
+

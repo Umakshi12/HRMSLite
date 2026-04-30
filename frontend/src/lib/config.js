@@ -1,5 +1,6 @@
-// Backend Base URL - Use VITE_API_URL from Vercel env, fallback to relative /api
-export const API_BASE = import.meta.env.VITE_API_URL || '/api';
+// Backend Base URL - Use VITE_API_URL from Vercel env, fallback to localhost in dev or relative /api in prod
+export const API_BASE = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:5000/api' : '/api');
+
 
 export const API = {
   LOGIN:            `${API_BASE}/login`,
@@ -15,11 +16,18 @@ export const API = {
   GRANT_ACCESS:     `${API_BASE}/grant-access`,
   RESET_PASSWORD:   `${API_BASE}/reset-password`,
   UPDATE_RIGHTS:    `${API_BASE}/update-user-rights`,
+  UPDATE_USER_LIMIT:`${API_BASE}/update-user-limit`,
   REMOVE_USER:      `${API_BASE}/remove-user`,
   GET_USERS:        `${API_BASE}/get-users`,
   GET_ACTIVITY_LOG: `${API_BASE}/get-activity-log`,
   GET_FILTER_OPTIONS: `${API_BASE}/get-filter-options`,
   CLEAR_CACHE:      `${API_BASE}/clear-cache`,
+  SPREADSHEETS:     `${API_BASE}/spreadsheets`,
+  BULK_IMPORT:      `${API_BASE}/bulk-import`,
+  ADMIN_DASHBOARD:  `${API_BASE}/get-admin-dashboard`,
+  IMPORT_PREVIEW:   `${API_BASE}/import/preview`,
+  IMPORT_VALIDATE:  `${API_BASE}/import/validate`,
+  IMPORT_CSV:       `${API_BASE}/import/csv`,
 }
 
 // Dynamic sheets — these are fetched from the backend at runtime

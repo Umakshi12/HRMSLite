@@ -29,4 +29,6 @@ export const grantAccessSchema = z.object({
   role:         z.enum(['User', 'Admin']),
   sheet_access: z.array(z.string()).default([]),
   notes:        z.string().optional().default(''),
+  max_users:    z.coerce.number().min(1).max(500).optional().default(10),
 })
+

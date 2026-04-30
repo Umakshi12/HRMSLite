@@ -8,5 +8,11 @@
       "entrypoint": "backend",
       "routePrefix": "/api"
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/sync-spreadsheets",
+      "schedule": "*/15 * * * *"
+    }
+  ]
 }

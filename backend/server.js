@@ -4,6 +4,7 @@ import helmet from 'helmet';
 import morgan from 'morgan';
 import dotenv from 'dotenv';
 import apiRoutes from './routes.js';
+import db from './db.js';
 
 dotenv.config();
 
@@ -32,10 +33,18 @@ if (!process.env.SPREADSHEET_ID || (!process.env.GOOGLE_CREDENTIALS_PATH && !pro
 
 // Middleware
 app.use(helmet());
-app.use(cors({
-  origin: ALLOWED_ORIGIN,
+
+// Improved CORS for local development + production
+const corsOptions = {
+  origin: process.env.NODE_ENV === 'development' 
+    ? [ALLOWED_ORIGIN, 'http://localhost:5173', 'http://127.0.0.1:5173'] 
+    : ALLOWED_ORIGIN,
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
-}));
+  credentials: true
+};
+
+app.use(cors(corsOptions));
+
 app.use(express.json());
 app.use(morgan('dev'));
 
@@ -43,6 +52,11 @@ app.use(morgan('dev'));
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', message: 'Staffurs HRMS Backend is running smoothly!' });
 });
+
+app.get('/', (req, res) => {
+  res.send('🚀 Staffurs HRMS API is running! Go to http://localhost:5173 to use the app.');
+});
+
 
 // API Routes
 app.use('/api', apiRoutes);
@@ -60,8 +74,18 @@ app.use((err, req, res, next) => {
 
 // Start Server (only if not running in a Vercel serverless environment)
 if (process.env.NODE_ENV !== 'production' || process.env.VERCEL !== '1') {
-  app.listen(PORT, () => {
+  app.listen(PORT, async () => {
     console.log(`🚀 Server is running on http://localhost:${PORT}`);
+    
+    // Initialize primary sheets in registry
+    await db.autoRegisterPrimarySheets();
+    
+    // Start background sync locally every 15 minutes
+    const SYNC_INTERVAL = 15 * 60 * 1000;
+    setInterval(async () => {
+      console.log('[Background] Running scheduled spreadsheet sync...');
+      await db.syncAllActiveSpreadsheets();
+    }, SYNC_INTERVAL);
   });
 }
 
