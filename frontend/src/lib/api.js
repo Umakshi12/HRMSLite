@@ -5,11 +5,33 @@ import { API } from './config'
 let demoMode = false
 export const isDemoMode = () => demoMode
 
+/** 
+ * SECURITY: Sanitize user input for formula injection (=, +, -, @) 
+ * Prevents malicious data from executing in Excel/Google Sheets
+ */
+export const sanitizeValue = (val) => {
+  if (typeof val !== 'string') return val
+  const formulaChars = ['=', '+', '-', '@']
+  if (formulaChars.includes(val.charAt(0))) {
+    return "'" + val
+  }
+  return val
+}
+
+export const sanitizeObject = (obj) => {
+  const sanitized = { ...obj }
+  Object.keys(sanitized).forEach(key => {
+    sanitized[key] = sanitizeValue(sanitized[key])
+  })
+  return sanitized
+}
+
 /** Get auth headers */
 function authHeaders() {
-  const token = useStore.getState().token
+  const token = useStore.getState().token;
   return {
     'Content-Type': 'application/json',
+    // SECURITY: Prioritize cookies, but keep Bearer support for legacy/mobile if needed
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   }
 }
@@ -17,39 +39,53 @@ function authHeaders() {
 /** Handle 401 → force logout */
 function handleUnauth(res) {
   if (res.status === 401) {
-    useStore.getState().clearAuth()
-    throw new Error('Session expired')
+    const { token, user, clearAuth } = useStore.getState()
+    if (token || user) {
+      clearAuth()
+      // Only throw if we were previously authenticated to prevent infinite loops on login page
+      throw new Error('Session expired')
+    }
   }
   return res
 }
 
-/** Generic fetch wrapper for custom backend API */
-async function apiFetch(url, options = {}) {
+/** Generic fetch wrapper — accepts full URL or /path (auto-prefixed with API_BASE) */
+export async function apiFetch(urlOrPath, options = {}) {
+  // SECURITY: Ensure API_BASE is set, never fallback to hardcoded localhost in prod
+  const base = API.BASE || (import.meta.env.DEV ? 'http://localhost:5000/api' : '');
+  if (!base && !urlOrPath.startsWith('http')) {
+    throw new Error('API Base URL is not configured');
+  }
+
+  const url = urlOrPath.startsWith('http') ? urlOrPath : `${base}${urlOrPath}`;
+  
   try {
-    const res = await fetch(url, { headers: authHeaders(), ...options })
-    handleUnauth(res)
+    // SECURITY: Always include credentials for HttpOnly cookies
+    const res = await fetch(url, { 
+      headers: authHeaders(), 
+      credentials: 'include', 
+      ...options 
+    })
     
+    // Only handle unauth for protected routes
+    if (!url.includes('/login')) {
+      handleUnauth(res)
+    }
+
     if (!res.ok) {
       const body = await res.json().catch(() => ({}))
       throw new Error(body.message || `API Error: ${res.status} ${res.statusText}`)
     }
 
     const data = await res.json()
-    
-    // Backward compatibility for wrapped array responses
-    if (Array.isArray(data)) {
-      // If it's a 1-element array containing our expected object, unwrap it
-      if (data.length === 1 && (data[0].total !== undefined || data[0].sheets !== undefined || data[0].data !== undefined)) {
-        return data[0]
-      }
-      // If it's a multi-element array, it might be the list of sheets/data directly
-      return data
-    }
-    
     return data
   } catch (err) {
     console.error(`Fetch Failure (${url}):`, err)
-    demoMode = true
+    // Don't trigger demo mode for auth/permission errors
+    const isAuthError = err.message?.includes('401') || err.message?.includes('403') || err.message?.includes('Session expired')
+    if (!isAuthError) {
+      demoMode = true
+    }
     throw err
   }
 }
@@ -57,6 +93,12 @@ async function apiFetch(url, options = {}) {
 // ── Auth ──
 export const login = (identifier, password) =>
   apiFetch(API.LOGIN, { method: 'POST', body: JSON.stringify({ identifier, password }) })
+
+export const logout = () =>
+  apiFetch('/logout', { method: 'POST' })
+
+export const checkSession = () =>
+  apiFetch('/me', { method: 'GET' })
 
 export const changePassword = (login_id, old_password, new_password) =>
   apiFetch(API.CHANGE_PASSWORD, { method: 'POST', body: JSON.stringify({ login_id, old_password, new_password }) })
@@ -81,12 +123,12 @@ export async function addCandidate(sheet, candidate, added_by) {
   return await apiFetch(API.ADD_CANDIDATE, { method: 'POST', body: JSON.stringify({ sheet, candidate, added_by }) })
 }
 
-export async function editCandidate(sr_no, sheet, target_sheet, updated_fields, updated_by) {
-  return await apiFetch(API.EDIT_CANDIDATE, { method: 'PUT', body: JSON.stringify({ sr_no, sheet, target_sheet, updated_fields, updated_by }) })
+export async function editCandidate(sr_no, row_index, sheet, target_sheet, updated_fields, updated_by) {
+  return await apiFetch(API.EDIT_CANDIDATE, { method: 'PUT', body: JSON.stringify({ sr_no, row_index, sheet, target_sheet, updated_fields, updated_by }) })
 }
 
-export async function removeCandidate(sr_no, sheet, removed_by) {
-  return await apiFetch(API.REMOVE_CANDIDATE, { method: 'DELETE', body: JSON.stringify({ sr_no, sheet, removed_by }) })
+export async function removeCandidate(sr_no, row_index, sheet, removed_by) {
+  return await apiFetch(API.REMOVE_CANDIDATE, { method: 'DELETE', body: JSON.stringify({ sr_no, row_index, sheet, removed_by }) })
 }
 
 export async function checkMobile(mobile, exclude_sr_no) {

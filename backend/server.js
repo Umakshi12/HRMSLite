@@ -113,8 +113,9 @@ const corsOptions = {
   origin: (origin, callback) => {
     const isLocal = !origin || origin.includes('localhost') || origin.includes('127.0.0.1');
     const isAllowed = origin === ALLOWED_ORIGIN;
+    const isVercelDomain = origin && origin.endsWith('.vercel.app');
     
-    if (isLocal || isAllowed) {
+    if (isLocal || isAllowed || (process.env.VERCEL === '1' && isVercelDomain)) {
       callback(null, true);
     } else {
       callback(new Error('CORS Policy Blocked: Unauthorized Origin'));

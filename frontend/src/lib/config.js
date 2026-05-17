@@ -3,6 +3,7 @@ export const API_BASE = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? '
 
 
 export const API = {
+  BASE:             API_BASE,
   LOGIN:            `${API_BASE}/login`,
   CHANGE_PASSWORD:  `${API_BASE}/change-password`,
   GET_SHEET_DATA:   `${API_BASE}/get-sheet-data`,

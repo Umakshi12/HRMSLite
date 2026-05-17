@@ -42,9 +42,9 @@
 @media print {
   .anti-copy, table, .table-wrap { display: none !important; }
   body::after {
-    content: "Printing not permitted — Staffurs HRMSLite";
+    content: "Printing not permitted — SheetSync Pro";
     display: flex; align-items: center; justify-content: center;
-    height: 100vh; font-size: 24px; color: #dc2626;
+    height: 100vh; font-size: 24px; color: #2563eb;
   }
 }
 

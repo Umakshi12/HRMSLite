@@ -3,7 +3,7 @@ import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { useReactTable, getCoreRowModel, getSortedRowModel, flexRender } from '@tanstack/react-table'
 import useStore from '../lib/store'
 import { applyFilters, removeCandidate, getFilterOptions, getSpreadsheets, syncSpreadsheet } from '../lib/api'
-import { Pencil, ArrowUpDown, ChevronLeft, ChevronRight, RefreshCw, Trash2, Filter, X, Eye, FileUp, Phone, MessageCircle } from 'lucide-react'
+import { Pencil, ArrowUpDown, ChevronLeft, ChevronRight, RefreshCw, Trash2, Filter, X, Eye, FileUp, Phone, MessageCircle, Download } from 'lucide-react'
 import { toast } from 'sonner'
 import CSVImportWizard from './CSVImportWizard'
 
@@ -144,7 +144,7 @@ const getColPriority = (key) => COLUMN_PRIORITY[key] || 999;
 
 
 export default function CandidateTable({ onEdit }) {
-  const { activeSheet, searchQuery, searchAllSheets, filters, setFilters } = useStore()
+  const { user, token, activeSheet, searchQuery, searchAllSheets, filters, setFilters } = useStore()
   const [sorting, setSorting] = useState([{ id: 'last_updated', desc: true }])
   const [page, setPage] = useState(1)
   const [descPopup, setDescPopup] = useState(null)
@@ -167,7 +167,7 @@ export default function CandidateTable({ onEdit }) {
   })
 
   const removeMut = useMutation({
-    mutationFn: (data) => removeCandidate(data.sr_no, data.sheet, data.user),
+    mutationFn: (data) => removeCandidate(data.sr_no, data.row_index, data.sheet, data.user),
     onSuccess: () => {
       toast.success('Candidate removed successfully')
       qc.invalidateQueries({ queryKey: ['sheet-data'] })
@@ -229,261 +229,164 @@ export default function CandidateTable({ onEdit }) {
     qc.invalidateQueries({ queryKey: ['sheet-data'] });
   };
 
-  const COLUMNS = useMemo(() => [
-    { accessorKey: 'sr_no', header: 'Sr.', size: 50, meta: { className: 'font-mono text-xs text-slate-400 text-center' } },
-    { accessorKey: 'name', header: 'Name', size: 150, meta: { className: 'font-semibold' } },
-    { accessorKey: 'address', header: 'Address', size: 140 },
-    { accessorKey: 'state', header: 'State', size: 90 },
-    { accessorKey: 'marital_status', header: 'Marital Status', size: 100 },
-    { accessorKey: 'timing', header: 'Timing', size: 85 },
-    { accessorKey: 'area', header: 'Area', size: 100 },
-    { accessorKey: 'experience', header: 'Exp.', size: 95 },
-    { accessorKey: 'education', header: 'Education', size: 105 },
-    { accessorKey: 'dob', header: 'DOB', size: 90, meta: { className: 'font-mono text-xs' } },
-    { accessorKey: 'age', header: 'Age', size: 50, meta: { className: 'font-mono text-center' } },
-    { accessorKey: 'gender', header: 'Gender', size: 75, cell: ({ getValue }) => <span className="capitalize">{getValue()}</span> },
-    { accessorKey: 'salary', header: 'Salary ₹', size: 85, cell: ({ getValue }) => { const v = getValue(); return v === 0 || !v ? '—' : `₹${Number(v).toLocaleString()}` }, meta: { className: 'font-mono' } },
-    { 
-      accessorKey: 'mobile', 
-      header: 'Mobile No', 
-      size: 150, 
-      cell: ({ getValue }) => {
-        const num = getValue()
-        if (!num) return <span className="text-slate-300">—</span>
-        
-        // Clean number: remove non-digits
-        const cleanNum = String(num).replace(/\D/g, '')
-        // For WhatsApp, prepend 91 if it's a 10-digit Indian number
-        const waNum = cleanNum.length === 10 ? '91' + cleanNum : cleanNum
+  const handleExport = async () => {
+    try {
+      const targetSheet = searchAllSheets ? 'all' : activeSheet
+      const url = `${import.meta.env.VITE_API_URL || 'http://localhost:5000/api'}/export-sheet?sheet=${targetSheet}&all=${searchAllSheets}`
+      
+      const response = await fetch(url, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
 
-        return (
-          <div className="flex items-center gap-2 group">
-            <span className="font-mono text-[11px] text-slate-600 min-w-[80px]">{num}</span>
-            <div className="flex items-center gap-1.5">
-              <a
-                href={`tel:${cleanNum}`}
-                className="w-6 h-6 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center hover:bg-blue-600 hover:text-white transition-all duration-200"
-                title={`Call ${num}`}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <Phone className="w-3 h-3" />
-              </a>
-              <a
-                href={`https://wa.me/${waNum}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="w-6 h-6 rounded-lg bg-green-50 text-green-600 flex items-center justify-center hover:bg-green-600 hover:text-white transition-all duration-200"
-                title={`WhatsApp ${num}`}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <MessageCircle className="w-3 h-3" />
-              </a>
-            </div>
-          </div>
-        )
-      },
-      meta: { className: 'font-mono' } 
-    },
-    { accessorKey: 'verification', header: 'Verification', size: 95, cell: ({ getValue }) => {
-      const v = getValue()
-      const cls = v === 'verified' ? 'bg-green-50 text-green-600' : v === 'pending' ? 'bg-amber-50 text-amber-600' : 'bg-red-50 text-red-500'
-      return <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-semibold capitalize ${cls}`}>{v}</span>
-    }},
-    {
-      accessorKey: 'description',
-      header: 'Description',
-      size: 200,
-      cell: ({ getValue }) => {
-        const val = getValue()
-        if (!val) return <span className="text-slate-300">—</span>
-        return (
-          <div className="flex items-center gap-1 group">
-            <div className="truncate max-w-[160px]" title={val}>{val}</div>
-            <button
-              onClick={(e) => { e.stopPropagation(); setDescPopup(val) }}
-              className="w-5 h-5 rounded flex items-center justify-center text-slate-300 hover:text-blue-500 hover:bg-blue-50 opacity-0 group-hover:opacity-100 transition cursor-pointer flex-shrink-0"
-              title="View full description"
-            >
-              <Eye className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        )
+      if (!response.ok) {
+        const err = await response.json()
+        throw new Error(err.message || 'Export failed')
       }
-    },
-    { accessorKey: 'since', header: 'Since', size: 90, meta: { className: 'font-mono text-xs' } },
-    {
-      accessorKey: 'added_by',
-      header: 'Added/Modified By',
-      size: 150,
-      cell: ({ getValue }) => {
-        const v = getValue()
-        if (!v) return <span className="text-slate-300">—</span>
-        
-        // Extract initials (up to 2 letters)
-        const initials = String(v)
-          .split(/[\s_.]+/)
-          .map(word => word[0])
-          .join('')
-          .substring(0, 2)
-          .toUpperCase();
 
-        return (
-          <div className="flex items-center gap-2 group" title={v}>
-            <div className="w-6 h-6 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-[10px] font-bold flex-shrink-0">
-              {initials}
-            </div>
-            <span className="text-xs text-slate-600 font-medium truncate max-w-[100px] cursor-help border-b border-dashed border-slate-300 group-hover:border-blue-400 group-hover:text-blue-600 transition">
-              {v}
-            </span>
-          </div>
-        )
-      }
-    },
-    {
-      accessorKey: 'last_updated',
-      header: 'Updated On',
-      size: 130,
-      cell: ({ getValue }) => {
-        const v = getValue()
-        if (!v) return <span className="text-slate-300">—</span>
-        try {
-          const d = new Date(v)
-          if (isNaN(d.getTime())) return <span className="font-mono text-xs">{v}</span>
-          
-          // Calculate relative time
-          const now = new Date()
-          const diffMs = now - d
-          const diffMins = Math.floor(diffMs / 60000)
-          const diffHours = Math.floor(diffMins / 60)
-          const diffDays = Math.floor(diffHours / 24)
-          
-          let relative = ''
-          if (diffMins < 1) relative = 'Just now'
-          else if (diffMins < 60) relative = `${diffMins} min${diffMins > 1 ? 's' : ''} ago`
-          else if (diffHours < 24) relative = `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`
-          else if (diffDays === 1) relative = 'Yesterday'
-          else if (diffDays < 7) relative = `${diffDays} days ago`
-          else relative = d.toLocaleDateString('en-GB')
-            
-          const exact = `${d.toLocaleDateString('en-GB')} ${d.toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit'})}`
-          
-          return (
-            <span className="font-mono text-xs text-slate-600 cursor-help border-b border-dashed border-slate-300 hover:border-blue-400 hover:text-blue-600 transition" title={exact}>
-              {relative}
-            </span>
-          )
-        } catch { return <span className="font-mono text-xs">{v}</span> }
-      }
-    },
-    {
-      accessorKey: 'last_message',
-      header: 'Last Conversation',
-      size: 180,
-      cell: ({ getValue }) => {
-        const val = getValue()
-        if (!val) return <span className="text-slate-300">—</span>
-        
-        const snippet = val.length > 80 ? val.substring(0, 80) + '...' : val;
-        
-        return (
-          <div className="flex items-center gap-1 group">
-            <div className="truncate max-w-[140px] text-[11px] text-slate-600 cursor-help" title={val}>{snippet}</div>
-            <button
-              onClick={(e) => { e.stopPropagation(); setDescPopup(val) }}
-              className="w-5 h-5 rounded flex items-center justify-center text-slate-300 hover:text-blue-500 hover:bg-blue-50 opacity-0 group-hover:opacity-100 transition cursor-pointer flex-shrink-0"
-              title="View full conversation"
-            >
-              <Eye className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        )
-      }
-    },
-  ], [])
-
-  const sortedCOLUMNS = useMemo(() => {
-    return [...COLUMNS].sort((a, b) => getColPriority(a.accessorKey) - getColPriority(b.accessorKey));
-  }, [COLUMNS]);
+      const blob = await response.blob()
+      const downloadUrl = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = downloadUrl
+      a.download = `${targetSheet === 'all' ? 'All_Candidates' : targetSheet}_Export_${new Date().toISOString().split('T')[0]}.csv`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      window.URL.revokeObjectURL(downloadUrl)
+      toast.success('Export downloaded successfully')
+    } catch (err) {
+      toast.error(err.message)
+    }
+  }
 
   const columns = useMemo(() => {
+    let baseHeaders = [];
     if (dynamicSheet && dynamicSheet.columns && dynamicSheet.columns.length > 0) {
-      // Sort dynamic columns by priority
-      const sortedDynamicCols = [...dynamicSheet.columns].sort((a, b) => {
-        const keyA = a.name || a;
-        const keyB = b.name || b;
-        return getColPriority(keyA) - getColPriority(keyB);
-      });
-
-      const dynamicCols = sortedDynamicCols.map((col) => ({
-        accessorKey: col.name || col,
-        header: col.name || col,
-        size: 150,
-        cell: ({ getValue }) => {
-          const v = getValue();
-          if (v === undefined || v === null || v === '') return <span className="text-slate-300">—</span>;
-          
-          // Re-apply special formatting for mobile if this is the mobile column
-          const colName = (col.name || col).toLowerCase();
-          if (colName === 'mobile' || colName === 'mobile_no' || colName === 'phone') {
-            const num = v;
-            const cleanNum = String(num).replace(/\D/g, '');
-            const waNum = cleanNum.length === 10 ? '91' + cleanNum : cleanNum;
-            return (
-              <div className="flex items-center gap-2 group">
-                <span className="font-mono text-[11px] text-slate-600 min-w-[80px]">{num}</span>
-                <div className="flex items-center gap-1.5">
-                  <a href={`tel:${cleanNum}`} className="w-6 h-6 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center hover:bg-blue-600 hover:text-white transition-all duration-200" title={`Call ${num}`}>
-                    <Phone className="w-3 h-3" />
-                  </a>
-                  <a href={`https://wa.me/${waNum}`} target="_blank" rel="noopener noreferrer" className="w-6 h-6 rounded-lg bg-green-50 text-green-600 flex items-center justify-center hover:bg-green-600 hover:text-white transition-all duration-200" title={`WhatsApp ${num}`}>
-                    <MessageCircle className="w-3 h-3" />
-                  </a>
-                </div>
-              </div>
-            );
-          }
-
-          return <span className="truncate max-w-[200px] inline-block">{String(v)}</span>;
-        }
-      }));
-
-      return [
-        ...dynamicCols,
-        {
-          id: 'actions',
-          header: '',
-          size: 80,
-          cell: ({ row }) => (
-            <div className="flex items-center gap-1">
-              <button
-                onClick={(e) => { e.stopPropagation(); onEdit(row.original) }}
-                className="w-7 h-7 rounded-lg hover:bg-blue-50 flex items-center justify-center text-blue-500 transition cursor-pointer"
-                title="Edit"
-              >
-                <Pencil className="w-3.5 h-3.5" />
-              </button>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (window.confirm(`Are you sure you want to remove ${row.original.name}?`)) {
-                    removeMut.mutate({ sr_no: row.original.sr_no, sheet: activeSheet || row.original.sheet, user: 'System' })
-                  }
-                }}
-                disabled={removeMut.isPending}
-                className="w-7 h-7 rounded-lg hover:bg-red-50 flex items-center justify-center text-red-500 transition cursor-pointer disabled:opacity-50"
-                title="Remove"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          ),
-        },
-      ];
+      baseHeaders = dynamicSheet.columns.map(c => c.name || c);
+    } else if (rows && rows.length > 0) {
+      // Auto-detect from data keys
+      baseHeaders = Object.keys(rows[0]).filter(k => !['_sheet', 'id', 'spreadsheet_id', 'row_index', 'search_vector'].includes(k));
+    } else {
+      // Fallback
+      baseHeaders = ['Sr.', 'Name', 'Mobile No', 'Address', 'State', 'Area', 'Experience', 'Education', 'DOB', 'Age', 'Gender', 'Salary', 'Verification', 'Description', 'Since', 'Added By', 'Last Updated'];
     }
 
-    return [
-      ...sortedCOLUMNS,
+    const normalizeHeader = (h) => String(h || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    const seenKeys = new Set();
 
+    const generatedCols = baseHeaders.map((headerName, index) => {
+      let accessorKey = normalizeHeader(headerName);
+      if (!accessorKey) accessorKey = `col_${index + 1}`;
+      
+      let uniqueKey = accessorKey;
+      let counter = 1;
+      while (seenKeys.has(uniqueKey)) {
+        uniqueKey = `${accessorKey}_${counter}`;
+        counter++;
+      }
+      seenKeys.add(uniqueKey);
+      
+      const colName = uniqueKey;
+      let size = 120;
+      
+      let cellRender = ({ getValue }) => {
+        const v = getValue();
+        if (v === undefined || v === null || v === '') return <span className="text-slate-300">—</span>;
+        const strVal = String(v);
+
+        const isEmailCol = colName.includes('email');
+        const isEmailData = strVal.includes('@') && strVal.includes('.') && !strVal.includes(' ');
+
+        if (isEmailCol || isEmailData) {
+          return (
+            <div className="flex items-center gap-2">
+              <span className="truncate max-w-[150px]">{strVal}</span>
+              <a href={`mailto:${strVal}`} className="w-6 h-6 rounded-lg bg-red-50 text-red-500 flex items-center justify-center hover:bg-red-500 hover:text-white transition-all flex-shrink-0" title={`Email ${strVal}`} onClick={(e) => e.stopPropagation()}>
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path></svg>
+              </a>
+            </div>
+          );
+        }
+
+        const cleanNum = String(strVal).replace(/\D/g, '');
+        const isPhoneCol = colName.includes('mobile') || colName.includes('phone') || colName.includes('contact');
+        const isPhoneData = cleanNum.length >= 10 && cleanNum.length <= 13 && !colName.includes('salary') && !colName.includes('sr') && !colName.includes('id') && !colName.includes('pin') && !colName.includes('date');
+
+        if (isPhoneCol || (isPhoneData && (strVal.startsWith('+') || cleanNum.length === 10 || cleanNum.length === 12))) {
+          const num = strVal;
+          const waNum = cleanNum.length === 10 ? '91' + cleanNum : cleanNum;
+          return (
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-[11px] text-slate-600 min-w-[80px]">{num}</span>
+              <div className="flex items-center gap-1.5 transition-opacity flex-shrink-0">
+                <a href={`tel:${cleanNum}`} className="w-6 h-6 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center hover:bg-blue-600 hover:text-white transition-all duration-200" title={`Call ${num}`} onClick={(e) => e.stopPropagation()}>
+                  <Phone className="w-3 h-3" />
+                </a>
+                <a href={`https://wa.me/${waNum}`} target="_blank" rel="noopener noreferrer" className="w-6 h-6 rounded-lg bg-green-50 text-green-600 flex items-center justify-center hover:bg-green-600 hover:text-white transition-all duration-200" title={`WhatsApp ${num}`} onClick={(e) => e.stopPropagation()}>
+                  <MessageCircle className="w-3 h-3" />
+                </a>
+              </div>
+            </div>
+          );
+        }
+
+        if (colName.includes('description') || colName.includes('note') || colName.includes('remark') || colName.includes('detail') || colName.includes('message')) {
+          return (
+            <div className="flex items-center gap-1">
+              <div className="truncate max-w-[160px]" title={strVal}>{strVal}</div>
+              <button onClick={(e) => { e.stopPropagation(); setDescPopup(strVal); }} className="w-5 h-5 rounded flex items-center justify-center text-slate-400 hover:text-blue-500 hover:bg-blue-50 transition cursor-pointer flex-shrink-0" title="View full text">
+                <Eye className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          );
+        }
+
+        if (colName === 'verification' || colName === 'status') {
+          const cls = strVal.toLowerCase() === 'verified' ? 'bg-green-50 text-green-600' : strVal.toLowerCase() === 'pending' ? 'bg-amber-50 text-amber-600' : 'bg-red-50 text-red-500';
+          return <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-semibold capitalize ${cls}`}>{strVal}</span>;
+        }
+
+        if (colName.includes('salary')) {
+          return strVal === '0' || strVal === '' ? '—' : `₹${Number(strVal.replace(/\D/g, '')).toLocaleString()}`;
+        }
+        
+        // General fallback for long strings (like address)
+        if (strVal.length > 40) {
+          return (
+            <div className="flex items-center gap-1">
+              <div className="truncate max-w-[160px]" title={strVal}>{strVal}</div>
+              <button onClick={(e) => { e.stopPropagation(); setDescPopup(strVal); }} className="w-5 h-5 rounded flex items-center justify-center text-slate-400 hover:text-blue-500 hover:bg-blue-50 transition cursor-pointer flex-shrink-0" title="View full text">
+                <Eye className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          );
+        }
+
+        return <span className="truncate max-w-[200px] inline-block">{strVal}</span>;
+      };
+
+      if (accessorKey === 'sr_no' || accessorKey === 'sr') size = 50;
+      else if (accessorKey.includes('description') || accessorKey.includes('message')) size = 200;
+      else if (accessorKey.includes('mobile')) size = 150;
+      else if (accessorKey.includes('address')) size = 140;
+      else if (accessorKey.includes('added_by')) size = 150;
+      else if (accessorKey.includes('last_updated')) size = 130;
+
+      return {
+        accessorKey: uniqueKey,
+        header: headerName,
+        size,
+        cell: cellRender,
+        meta: (uniqueKey === 'sr_no' || uniqueKey.includes('salary')) ? { className: 'font-mono' } : undefined
+      };
+    });
+
+    // Ensure columns are ordered by priority
+    generatedCols.sort((a, b) => getColPriority(a.accessorKey) - getColPriority(b.accessorKey));
+
+    return [
+      ...generatedCols,
       {
         id: 'actions',
         header: '',
@@ -500,8 +403,8 @@ export default function CandidateTable({ onEdit }) {
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                if (window.confirm(`Are you sure you want to remove ${row.original.name}?`)) {
-                  removeMut.mutate({ sr_no: row.original.sr_no, sheet: activeSheet || row.original.sheet, user: 'System' })
+                if (window.confirm(`Are you sure you want to remove ${row.original.name || 'this record'}?`)) {
+                  removeMut.mutate({ sr_no: row.original.sr_no || row.original.sr, row_index: row.original.row_index, sheet: activeSheet || row.original.sheet || row.original._sheet, user: 'System' })
                 }
               }}
               disabled={removeMut.isPending}
@@ -514,7 +417,7 @@ export default function CandidateTable({ onEdit }) {
         ),
       },
     ];
-  }, [onEdit, activeSheet, removeMut, sortedCOLUMNS, dynamicSheet])
+  }, [dynamicSheet, rows, removeMut, activeSheet, onEdit]);
 
   const table = useReactTable({
     data: rows,
@@ -572,6 +475,16 @@ export default function CandidateTable({ onEdit }) {
             title="Sync & Refresh">
             <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
           </button>
+          {user && ['admin', 'super_admin'].includes(String(user.role).toLowerCase().replace(/\s+/g, '_')) && (
+            <button
+              onClick={handleExport}
+              className="ml-1 px-3 h-8 rounded-lg border border-slate-200 text-slate-600 flex items-center justify-center gap-1.5 hover:bg-slate-50 transition cursor-pointer text-xs font-semibold"
+              title="Export CSV"
+            >
+              <Download className="w-3.5 h-3.5" />
+              Export
+            </button>
+          )}
           <button
             onClick={() => setShowImportWizard(true)}
             className="ml-1 px-3 h-8 rounded-lg bg-blue-600 text-white flex items-center justify-center gap-1.5 hover:bg-blue-700 transition cursor-pointer text-xs font-bold shadow-sm shadow-blue-100"
@@ -589,9 +502,10 @@ export default function CandidateTable({ onEdit }) {
           {Object.entries(filters).map(([key, val]) => {
             const display = Array.isArray(val) ? val.join(', ') : val
             if (!display) return null
+            const labelName = FILTERABLE[key] || (key.charAt(0).toUpperCase() + key.slice(1).replace(/_/g, ' '))
             return (
               <span key={key} className="inline-flex items-center gap-1 bg-blue-100 text-blue-700 px-2.5 py-1 rounded-full text-[11px] font-semibold">
-                {FILTERABLE[key] || key}: {display}
+                {labelName}: {display}
                 <button onClick={() => handleFilterChange(key, [])} className="cursor-pointer"><X className="w-3 h-3" /></button>
               </span>
             )
@@ -619,8 +533,9 @@ export default function CandidateTable({ onEdit }) {
                 <tr key={hg.id}>
                   {hg.headers.map((header) => {
                     const colKey = header.column.columnDef.accessorKey
-                    const isFilterable = colKey && FILTERABLE[colKey]
                     const opts = filterOptions?.[colKey] || []
+                    const isFilterable = colKey && (FILTERABLE[colKey] || opts.length > 0)
+                    const labelName = FILTERABLE[colKey] || (typeof header.column.columnDef.header === 'string' ? header.column.columnDef.header : colKey)
                     return (
                       <th key={header.id} className="excel-th" style={{ width: header.getSize() }}>
                         <span className="flex items-center gap-0.5">
@@ -633,10 +548,10 @@ export default function CandidateTable({ onEdit }) {
                               <ArrowUpDown className={`w-3 h-3 ${header.column.getIsSorted() ? 'text-blue-500 opacity-100' : 'opacity-30'}`} />
                             )}
                           </span>
-                          {(!dynamicSheet && isFilterable && opts.length > 0) && (
+                          {(isFilterable && opts.length > 0) && (
                             <HeaderFilter
                               column={colKey}
-                              label={FILTERABLE[colKey]}
+                              label={labelName}
                               options={opts}
                               activeFilters={filters}
                               onFilterChange={handleFilterChange}

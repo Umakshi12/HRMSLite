@@ -50,3 +50,8 @@ Thumbs.db
 All candidate in india.xlsx
 *.xlsx
 backend/google-credentials.json
+google-credentials.json
+*.json.key
+backend/prisma/dev.db
+backend/prisma/dev.db-journal
+backend/prisma/*.db

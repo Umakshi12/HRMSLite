@@ -8,6 +8,7 @@ import AdminPanel from '../components/AdminPanel'
 import BulkImportPage from '../components/BulkImportPage'
 import SpreadsheetManager from '../components/SpreadsheetManager'
 import CandidateModal from '../components/CandidateModal'
+import AuditLogViewer from '../components/AuditLogViewer'
 import Watermark from '../components/Watermark'
 
 export default function Dashboard() {
@@ -42,6 +43,8 @@ export default function Dashboard() {
           <div className="flex-1 overflow-y-auto p-6">
             <SpreadsheetManager />
           </div>
+        ) : currentView === 'audit' && isAdmin ? (
+          <AuditLogViewer />
         ) : (
           <div className="flex-1 overflow-hidden p-4 space-y-3 flex flex-col">
             <SearchBar />

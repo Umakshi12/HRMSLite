@@ -26,7 +26,8 @@ export const loginSchema = z.object({
 
 export const grantAccessSchema = z.object({
   identifier:   z.string().min(1, 'Email or phone required'),
-  role:         z.enum(['User', 'Admin']),
+  phone:        z.string().optional().or(z.literal('')),
+  role:         z.enum(['user', 'admin']),
   sheet_access: z.array(z.string()).default([]),
   notes:        z.string().optional().default(''),
   max_users:    z.coerce.number().min(1).max(500).optional().default(10),

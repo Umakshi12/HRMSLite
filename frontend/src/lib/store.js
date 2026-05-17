@@ -3,12 +3,11 @@ import { create } from 'zustand'
 const useStore = create((set, get) => ({
   // ── Auth ──
   user: null,
-  token: null,
-  setAuth: (user, token) => set({ user, token }),
+  token: null, // Legacy support, prefer HttpOnly cookies
+  setAuth: (user, token) => set({ user, token: token || null }),
   clearAuth: () => {
     set({ user: null, token: null })
-    sessionStorage.removeItem('staffurs_token')
-    sessionStorage.removeItem('staffurs_user')
+    sessionStorage.removeItem('sheetsync_user')
   },
 
   // ── Active Sheet ──
@@ -33,9 +32,9 @@ const useStore = create((set, get) => ({
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
 
   // ── Column Preferences (persisted) ──
-  columnVisibility: JSON.parse(localStorage.getItem('staffurs_cols') || '{}'),
+  columnVisibility: JSON.parse(localStorage.getItem('sheetsync_cols') || '{}'),
   setColumnVisibility: (vis) => {
-    localStorage.setItem('staffurs_cols', JSON.stringify(vis))
+    localStorage.setItem('sheetsync_cols', JSON.stringify(vis))
     set({ columnVisibility: vis })
   },
 }))

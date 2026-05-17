@@ -25,10 +25,9 @@ export default function LoginPage() {
     try {
       const res = await login(data.identifier, data.password)
       if (res.success) {
-        sessionStorage.setItem('staffurs_token', res.token)
-        sessionStorage.setItem('staffurs_user', JSON.stringify(res.user))
-        setAuth(res.user, res.token)
-        toast.success(`Welcome back, ${res.user.name || 'User'}!`)
+        setAuth(res.user)
+        sessionStorage.setItem('sheetsync_user', JSON.stringify(res.user))
+        toast.success(`Welcome back, ${res.user.identifier}!`)
       } else {
         setAttempts((a) => a + 1)
         toast.error(res.message || 'Invalid credentials')
@@ -53,7 +52,7 @@ export default function LoginPage() {
 
         <h1 className="text-center text-2xl font-extrabold text-slate-800 mb-1">Welcome Back</h1>
         <p className="text-center text-sm text-slate-500 mb-8">
-          Sign in to Staffurs HRMSLite
+          Sign in to SheetSync Pro
         </p>
 
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
@@ -77,8 +76,8 @@ export default function LoginPage() {
             <div className="flex justify-between items-center mb-1.5">
               <label className="text-xs font-semibold text-slate-500">Password</label>
               <a
-                href="mailto:hr@staffurs.com?subject=HRMS%20Access%20Support"
-                onClick={() => toast.info('Opening your email app to contact HR admin.')}
+                href="mailto:support@sheetsync.pro?subject=SheetSync%20Access%20Support"
+                onClick={() => toast.info('Opening your email app to contact admin.')}
                 className="text-xs text-blue-600 font-semibold cursor-pointer hover:underline"
               >
                 Contact Admin

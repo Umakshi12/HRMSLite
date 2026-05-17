@@ -1,24 +1,48 @@
-import { useState, useEffect } from 'react'
+import { useEffect, useState } from 'react'
+import { checkSession } from './lib/api'
 import useStore from './lib/store'
 import LoginPage from './pages/LoginPage'
 import Dashboard from './pages/Dashboard'
 import { Toaster } from 'sonner'
 
 export default function App() {
-  const { user, token, setAuth } = useStore()
-
-  // Restore session from sessionStorage
+  const { user, setAuth, clearAuth } = useStore()
+  const [initializing, setInitializing] = useState(true)
+  
   useEffect(() => {
-    const saved = sessionStorage.getItem('staffurs_token')
-    const savedUser = sessionStorage.getItem('staffurs_user')
-    if (saved && savedUser) {
+    // SECURITY: Restore session from HttpOnly cookie on load
+    const restoreSession = async () => {
       try {
-        setAuth(JSON.parse(savedUser), saved)
-      } catch { /* ignore corrupt storage */ }
+        const res = await checkSession()
+        if (res.success && res.user) {
+          setAuth(res.user)
+        }
+      } catch (err) {
+        console.log('[Auth] No active session found')
+        clearAuth()
+      } finally {
+        setInitializing(false)
+      }
     }
-  }, [])
+    
+    // Check if we have a persisted user hint to avoid unnecessary calls (optional optimization)
+    const userHint = sessionStorage.getItem('sheetsync_user')
+    if (userHint) {
+      restoreSession()
+    } else {
+      setInitializing(false)
+    }
+  }, [setAuth, clearAuth])
 
-  if (!user || !token) {
+  if (initializing) {
+    return (
+      <div className="h-screen flex items-center justify-center bg-slate-50">
+        <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
+      </div>
+    )
+  }
+
+  if (!user) {
     return (
       <>
         <Toaster position="top-right" richColors closeButton />

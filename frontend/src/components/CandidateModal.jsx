@@ -1,9 +1,7 @@
-import { useEffect } from 'react'
+import { useEffect, useMemo } from 'react'
 import { useForm } from 'react-hook-form'
-import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query'
-import { candidateSchema } from '../lib/schemas'
-import { addCandidate, editCandidate, checkMobile, getSheetSummary } from '../lib/api'
+import { addCandidate, editCandidate, getSheetSummary, getSpreadsheets, sanitizeObject } from '../lib/api'
 import { getSheets } from '../lib/mockData'
 import { INDIAN_STATES, EXPERIENCE_OPTIONS, EDUCATION_OPTIONS, TIMING_OPTIONS, MARITAL_OPTIONS, GENDER_OPTIONS, VERIFICATION_OPTIONS } from '../lib/config'
 import useStore from '../lib/store'
@@ -20,16 +18,57 @@ export default function CandidateModal({ editData, onClose }) {
   const { data: summary } = useQuery({ queryKey: ['sheet-summary'], queryFn: getSheetSummary })
   const sheets = summary?.sheets?.length ? summary.sheets.map((s) => s.name) : getSheets()
 
+  const { data: spreadsheets } = useQuery({ queryKey: ['spreadsheets'], queryFn: getSpreadsheets, placeholderData: [] })
+
+  const dynamicSheet = useMemo(() => {
+    if (!spreadsheets) return null
+    return spreadsheets.find(s => s.name === (editData?._sheet || editData?.sheet || activeSheet) && s.is_active)
+  }, [spreadsheets, activeSheet, editData])
+
+  const columns = useMemo(() => {
+    let baseHeaders = []
+    if (dynamicSheet && dynamicSheet.columns && dynamicSheet.columns.length > 0) {
+      baseHeaders = dynamicSheet.columns.map(c => c.name || c)
+    } else if (isEdit && editData) {
+      baseHeaders = Object.keys(editData).filter(k => !['_sheet', 'id', 'spreadsheet_id', 'row_index', 'search_vector'].includes(k))
+    } else {
+      // Fallback
+      baseHeaders = ['Sr.', 'Name', 'Mobile No', 'Address', 'State', 'Area', 'Experience', 'Education', 'DOB', 'Age', 'Gender', 'Salary', 'Verification', 'Description', 'Since', 'Added By', 'Last Updated']
+    }
+    // Remove auto-generated fields so user doesn't fill them
+    return baseHeaders.filter(h => !['Sr.', 'Sr', 'Sr No', 'Sr. No', 'Added By', 'Last Updated', 'Modified By', 'Created By', 'Created At', 'Modified At', 'Updated By', 'Updated At', 'Age'].includes(h))
+  }, [dynamicSheet, isEdit, editData])
+
   const today = format(new Date(), 'dd-MM-yyyy')
 
+  // Prepare default values
+  const defaultValues = useMemo(() => {
+    if (isEdit) {
+      const vals = { ...editData, sheet: editData._sheet || editData.sheet || activeSheet || 'Japa' }
+      return vals
+    }
+    // Default values for new candidate based on known columns
+    const vals = { sheet: activeSheet || 'Japa' }
+    columns.forEach(col => {
+      const lower = String(col).toLowerCase()
+      if (lower.includes('since') || lower === 'date') vals[col] = today
+      else if (lower.includes('verification') || lower === 'status') vals[col] = 'not verified'
+      else if (lower.includes('salary')) vals[col] = 0
+      else if (lower.includes('gender')) vals[col] = 'Female'
+      else if (lower.includes('experience')) vals[col] = '<1 year'
+      else if (lower.includes('education')) vals[col] = '10th Pass'
+      else vals[col] = ''
+    })
+    return vals
+  }, [isEdit, editData, activeSheet, columns, today])
+
   const { register, handleSubmit, setValue, watch, formState: { errors } } = useForm({
-    resolver: zodResolver(candidateSchema),
-    defaultValues: isEdit
-      ? { ...editData, sheet: editData.sheet || activeSheet || 'Japa' }
-      : { sheet: activeSheet || 'Japa', since: today, verification: 'not verified', salary: 0, gender: 'Female', experience: '<1 year', education: '10th Pass' },
+    defaultValues
   })
 
-  const dob = watch('dob')
+  // Age calculation helper based on finding a dob column
+  const dobField = columns.find(c => String(c).toLowerCase().includes('dob') || String(c).toLowerCase().includes('date of birth'))
+  const dobVal = dobField ? watch(dobField) : ''
   const calcAge = (dobStr) => {
     if (!dobStr || !/^\d{2}-\d{2}-\d{4}$/.test(dobStr)) return ''
     const [d, m, y] = dobStr.split('-').map(Number)
@@ -38,8 +77,18 @@ export default function CandidateModal({ editData, onClose }) {
     return age >= 0 && age < 120 ? age : ''
   }
 
+  // Update sheet if it changes in edit mode, or keep it synced with activeSheet for new mode
+  useEffect(() => {
+    if (!isEdit && activeSheet) {
+      setValue('sheet', activeSheet)
+    }
+  }, [activeSheet, isEdit, setValue])
+
   const addMut = useMutation({
-    mutationFn: (data) => addCandidate(data.sheet, data, user?.login_id),
+    mutationFn: (data) => {
+      const { sheet, ...candidateData } = data
+      return addCandidate(sheet, candidateData, user?.login_id)
+    },
     onSuccess: () => {
       toast.success('Candidate added successfully')
       qc.invalidateQueries({ queryKey: ['sheet-data'] })
@@ -51,7 +100,10 @@ export default function CandidateModal({ editData, onClose }) {
   })
 
   const editMut = useMutation({
-    mutationFn: (data) => editCandidate(editData.sr_no, editData._sheet || editData.sheet || activeSheet, data.sheet, data, user?.login_id),
+    mutationFn: (data) => {
+      const { sheet, ...candidateData } = data
+      return editCandidate(editData.sr_no || editData.sr || editData['Sr No'], editData.row_index, editData._sheet || editData.sheet || activeSheet, sheet, candidateData, user?.login_id)
+    },
     onSuccess: () => {
       toast.success('Candidate updated')
       qc.invalidateQueries({ queryKey: ['sheet-data'] })
@@ -63,11 +115,137 @@ export default function CandidateModal({ editData, onClose }) {
   })
 
   const onSubmit = (data) => {
-    if (isEdit) editMut.mutate(data)
-    else addMut.mutate(data)
+    // SECURITY: Sanitize all fields for formula injection before sending to backend
+    const sanitized = sanitizeObject(data)
+    if (isEdit) editMut.mutate(sanitized)
+    else addMut.mutate(sanitized)
   }
 
   const loading = addMut.isPending || editMut.isPending
+
+  // Render dynamic field based on heuristics
+  const renderField = (col) => {
+    const lower = String(col).toLowerCase()
+    
+    // Mobile / Phone
+    if (lower.includes('mobile') || lower.includes('phone') || lower.includes('contact')) {
+      const val = watch(col)
+      return (
+        <div className="relative group/mobile">
+          <input 
+            {...register(col, { required: 'Mobile is required', minLength: { value: 10, message: 'Min 10 digits' } })} 
+            placeholder="10-digit number" 
+            maxLength={13} 
+            className="field-input pr-20" 
+          />
+          <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-1.5 opacity-0 group-hover/mobile:opacity-100 transition-opacity">
+            {val && val.length >= 10 && (
+              <>
+                <a
+                  href={`tel:${val}`}
+                  className="w-7 h-7 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center hover:bg-blue-600 hover:text-white transition-all duration-200"
+                  title="Call now"
+                >
+                  <Phone className="w-3.5 h-3.5" />
+                </a>
+                <a
+                  href={`https://wa.me/${val.length === 10 ? '91' + val : val}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-7 h-7 rounded-lg bg-green-50 text-green-600 flex items-center justify-center hover:bg-green-600 hover:text-white transition-all duration-200"
+                  title="Open WhatsApp"
+                >
+                  <MessageCircle className="w-3.5 h-3.5" />
+                </a>
+              </>
+            )}
+          </div>
+        </div>
+      )
+    }
+
+    // Name
+    if (lower === 'name' || lower === 'full name' || lower === 'candidate' || lower === 'candidate name') {
+      return <input {...register(col, { required: 'Name is required' })} placeholder={`Enter ${col}`} className="field-input" />
+    }
+
+    // Dropdowns
+    if (lower.includes('gender')) {
+      return (
+        <select {...register(col)} className="field-input">
+          {GENDER_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+        </select>
+      )
+    }
+    if (lower.includes('state')) {
+      return (
+        <select {...register(col)} className="field-input">
+          <option value="">Select state</option>
+          {INDIAN_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+      )
+    }
+    if (lower.includes('marital')) {
+      return (
+        <select {...register(col)} className="field-input">
+          <option value="">Select</option>
+          {MARITAL_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+        </select>
+      )
+    }
+    if (lower.includes('timing') || lower.includes('shift')) {
+      return (
+        <select {...register(col)} className="field-input">
+          <option value="">Select</option>
+          {TIMING_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+        </select>
+      )
+    }
+    if (lower.includes('experience') || lower === 'exp') {
+      return (
+        <select {...register(col)} className="field-input">
+          {EXPERIENCE_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+        </select>
+      )
+    }
+    if (lower.includes('education') || lower === 'degree') {
+      return (
+        <select {...register(col)} className="field-input">
+          {EDUCATION_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+        </select>
+      )
+    }
+    if (lower.includes('verification') || lower === 'status') {
+      return (
+        <select {...register(col)} className="field-input">
+          {VERIFICATION_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+        </select>
+      )
+    }
+    
+    // Numbers
+    if (lower.includes('salary')) {
+      return <input {...register(col, { valueAsNumber: true })} type="number" min={0} className="field-input" />
+    }
+
+    // Textareas
+    if (lower.includes('description') || lower.includes('remark') || lower.includes('note')) {
+      return <textarea {...register(col)} maxLength={500} rows={3} placeholder="Details..." className="field-input resize-y" />
+    }
+
+    // Fallback Input
+    return <input {...register(col)} placeholder={lower.includes('dob') || lower.includes('since') ? "DD-MM-YYYY" : `Enter ${col}`} className="field-input" />
+  }
+
+  // Separate description-like fields to put them at the bottom
+  const normalCols = columns.filter(c => {
+    const l = String(c).toLowerCase()
+    return !l.includes('description') && !l.includes('remark') && !l.includes('note')
+  })
+  const textCols = columns.filter(c => {
+    const l = String(c).toLowerCase()
+    return l.includes('description') || l.includes('remark') || l.includes('note')
+  })
 
   return (
     <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={onClose}>
@@ -80,126 +258,41 @@ export default function CandidateModal({ editData, onClose }) {
 
         {/* Form */}
         <form onSubmit={handleSubmit(onSubmit)} className="flex-1 overflow-y-auto p-6">
-          {isEdit && (
+          {isEdit && (editData.sr_no || editData.sr || editData['Sr No']) && (
             <div className="mb-4 px-3 py-2 bg-slate-50 rounded-lg text-xs text-slate-500">
-              Sr. No: <strong className="text-slate-700">{editData.sr_no}</strong>
+              Sr. No: <strong className="text-slate-700">{editData.sr_no || editData.sr || editData['Sr No']}</strong>
             </div>
           )}
 
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <Field label="Category *" error={errors.sheet}>
               <select {...register('sheet')} className="field-input">
                 {sheets.map((s) => <option key={s} value={s}>{s}</option>)}
               </select>
             </Field>
 
-            <Field label="Full Name *" error={errors.name}>
-              <input {...register('name')} placeholder="Candidate name" className="field-input" />
-            </Field>
+            {normalCols.map(col => (
+              <Field key={col} label={`${col}${['name', 'mobile', 'full name', 'candidate name', 'candidate'].includes(String(col).toLowerCase()) || String(col).toLowerCase().includes('mobile') || String(col).toLowerCase().includes('phone') ? ' *' : ''}`} error={errors[col]}>
+                {renderField(col)}
+              </Field>
+            ))}
 
-            <Field label="Mobile No. *" error={errors.mobile}>
-              <div className="relative group/mobile">
-                <input {...register('mobile')} placeholder="10-digit number" maxLength={10} className="field-input pr-20" />
-                <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-1.5 opacity-0 group-hover/mobile:opacity-100 transition-opacity">
-                  {watch('mobile') && watch('mobile').length >= 10 && (
-                    <>
-                      <a
-                        href={`tel:${watch('mobile')}`}
-                        className="w-7 h-7 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center hover:bg-blue-600 hover:text-white transition-all duration-200"
-                        title="Call now"
-                      >
-                        <Phone className="w-3.5 h-3.5" />
-                      </a>
-                      <a
-                        href={`https://wa.me/${watch('mobile').length === 10 ? '91' + watch('mobile') : watch('mobile')}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="w-7 h-7 rounded-lg bg-green-50 text-green-600 flex items-center justify-center hover:bg-green-600 hover:text-white transition-all duration-200"
-                        title="Open WhatsApp"
-                      >
-                        <MessageCircle className="w-3.5 h-3.5" />
-                      </a>
-                    </>
-                  )}
-                </div>
-              </div>
-            </Field>
-
-            <Field label="Gender *" error={errors.gender}>
-              <select {...register('gender')} className="field-input">
-                {GENDER_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
-              </select>
-            </Field>
-
-            <Field label="DOB (DD-MM-YYYY) *" error={errors.dob}>
-              <input {...register('dob')} placeholder="DD-MM-YYYY" className="field-input" />
-            </Field>
-
-            <Field label="Age (auto)">
-              <input value={calcAge(dob)} readOnly className="field-input bg-slate-50 text-slate-400" />
-            </Field>
-
-            <Field label="Address" error={errors.address}>
-              <input {...register('address')} placeholder="Street/locality" className="field-input" />
-            </Field>
-
-            <Field label="State" error={errors.state}>
-              <select {...register('state')} className="field-input">
-                <option value="">Select state</option>
-                {INDIAN_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
-              </select>
-            </Field>
-
-            <Field label="Area" error={errors.area}>
-              <input {...register('area')} placeholder="e.g. Bandra, Airoli" className="field-input" />
-            </Field>
-
-            <Field label="Marital Status">
-              <select {...register('marital_status')} className="field-input">
-                <option value="">Select</option>
-                {MARITAL_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
-              </select>
-            </Field>
-
-            <Field label="Timing">
-              <select {...register('timing')} className="field-input">
-                <option value="">Select</option>
-                {TIMING_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
-              </select>
-            </Field>
-
-            <Field label="Experience *" error={errors.experience}>
-              <select {...register('experience')} className="field-input">
-                {EXPERIENCE_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
-              </select>
-            </Field>
-
-            <Field label="Education *" error={errors.education}>
-              <select {...register('education')} className="field-input">
-                {EDUCATION_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
-              </select>
-            </Field>
-
-            <Field label="Salary (₹)" error={errors.salary}>
-              <input {...register('salary', { valueAsNumber: true })} type="number" min={0} className="field-input" />
-            </Field>
-
-            <Field label="Verification">
-              <select {...register('verification')} className="field-input">
-                {VERIFICATION_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
-              </select>
-            </Field>
-
-            <Field label="Since *" error={errors.since}>
-              <input {...register('since')} placeholder="DD-MM-YYYY" className="field-input" />
-            </Field>
+            {dobField && (
+              <Field label="Age (auto)">
+                <input value={calcAge(dobVal)} readOnly className="field-input bg-slate-50 text-slate-400" />
+              </Field>
+            )}
           </div>
 
-          <div className="mt-4">
-            <Field label="Description" error={errors.description}>
-              <textarea {...register('description')} maxLength={500} rows={3} placeholder="Skills, interests..." className="field-input resize-y" />
-            </Field>
-          </div>
+          {textCols.length > 0 && (
+            <div className="mt-4 space-y-4">
+              {textCols.map(col => (
+                <Field key={col} label={col} error={errors[col]}>
+                  {renderField(col)}
+                </Field>
+              ))}
+            </div>
+          )}
 
           {/* Footer */}
           <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-slate-100">

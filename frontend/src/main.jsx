@@ -17,8 +17,8 @@ const queryClient = new QueryClient({
 
 // Console security warning
 console.log(
-  '%c⚠️ Staffurs HRMSLite: Unauthorized data extraction is prohibited.',
-  'color: #dc2626; font-size: 16px; font-weight: bold;'
+  '%c⚠️ SheetSync Pro: Unauthorized data extraction is prohibited.',
+  'color: #2563eb; font-size: 16px; font-weight: bold;'
 )
 
 ReactDOM.createRoot(document.getElementById('root')).render(
