@@ -2,52 +2,239 @@ generator client {
   provider = "prisma-client-js"
 }
 
+// NOTE: For production, manually run these SQL migrations to optimize soft-delete queries:
+// CREATE INDEX ON "User"(tenant_id) WHERE deleted_at IS NULL;
+// CREATE INDEX ON "Spreadsheet"(tenant_id) WHERE deleted_at IS NULL;
+// CREATE INDEX ON "SpreadsheetTab"(spreadsheet_id) WHERE deleted_at IS NULL;
+
 datasource db {
-  provider = "sqlite"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
+// ── Enums ──────────────────────────────────────────────────────────────────
+enum UserRole {
+  super_admin
+  admin
+  user
+}
+
+enum UserStatus {
+  active
+  inactive
+  pending
+}
+
+enum PlanType {
+  basic
+  standard
+  pro
+}
+
+enum TenantStatus {
+  active
+  inactive
+  suspended
+}
+
+// ── Tenants ──────────────────────────────────────────────────────────────────
+model Tenant {
+  id         String       @id @default(uuid())
+  name       String       @default("Default Tenant")
+  plan       PlanType     @default(pro)
+  status     TenantStatus @default(active)
+  created_at DateTime     @default(now())
+  updated_at DateTime     @updatedAt
+
+  users            User[]
+  spreadsheets     Spreadsheet[]
+  spreadsheetTabs  SpreadsheetTab[]
+  sheetRows        SheetRow[]
+  userTabAccesses  UserTabAccess[]
+  auditLogs        AuditLog[]
+  activityLogs     ActivityLog[]
+  googleOAuthTokens GoogleOAuthToken[]
+}
+
+// ── Users ──────────────────────────────────────────────────────────────────
 model User {
-  id            String   @id @default(uuid())
-  login_id      String   @unique
-  identifier    String   @unique
-  password      String
-  role          String   @default("User")
-  status        String   @default("active")
-  last_login    DateTime?
-  sheet_access  String   @default("[]") // Stored as JSON string
-  created_at    DateTime @default(now())
-  updated_at    DateTime @updatedAt
+  id             String     @id @default(uuid())
+  login_id       String     @unique
+  name           String     @default("")
+  identifier     String     @unique          // email used for login
+  phone          String?    @unique          // phone number for SMS (Must be unique)
+  password       String                      // bcrypt hash — never store raw value
+  role           UserRole   @default(user)
+  plan           PlanType   @default(pro)  // basic | standard | pro (admin only)
+  status         UserStatus @default(active)
+  max_user_quota Int        @default(10)
+  notes          String?
+  last_login     DateTime?
+  created_by     String?
+  tenant_id      String?
+  deleted_at     DateTime?                 // Soft delete support
+  created_at     DateTime   @default(now())
+  updated_at     DateTime   @updatedAt
+
+  // Relations
+  tenant         Tenant?         @relation(fields: [tenant_id], references: [id], onDelete: SetNull)
+  tabAccess      UserTabAccess[] @relation("UserToTabAccess")
+  auditLogs      AuditLog[]      @relation("ActorToAuditLog")
+
+  @@index([tenant_id])
+  @@index([role])
 }
 
-model Candidate {
+// ── Registered Spreadsheets ────────────────────────────────────────────────
+model Spreadsheet {
   id              String   @id @default(uuid())
-  sr_no           Int      @unique
-  name            String
-  address         String?
-  state           String?
-  marital_status  String?
-  timing          String?
-  area            String?
-  experience      String?
-  education       String?
-  dob             String?
-  age             Int?
-  gender          String?
-  salary          Float?
-  mobile          String   @unique
-  verification    String   @default("pending")
-  description     String?
-  since           String?
-  sheet           String
+  sheet_id        String   @unique          // Google Sheets spreadsheet ID
+  name            String                    // Human-readable name
+  owner_id        String                    // login_id of the admin who connected it
+  is_active       Boolean  @default(true)
+  candidate_count Int      @default(0)
+  verified_count  Int      @default(0)
+  tenant_id       String?
+  last_synced_at  DateTime?
+  deleted_at      DateTime?                 // Soft delete support
   created_at      DateTime @default(now())
   updated_at      DateTime @updatedAt
+
+  // Relations
+  tenant          Tenant?         @relation(fields: [tenant_id], references: [id], onDelete: SetNull)
+  tabs            SpreadsheetTab[]
+  tabAccess       UserTabAccess[]
+  rows            SheetRow[]
+
+  @@index([tenant_id])
+  @@index([owner_id])
 }
 
+// ── Individual Tabs within a Spreadsheet ──────────────────────────────────
+model SpreadsheetTab {
+  id             String   @id @default(uuid())
+  spreadsheet_id String
+  tab_name       String
+  headers        Json     @default("[]")   // cached column headers array
+  row_count      Int      @default(0)
+  tenant_id      String?
+  last_synced_at DateTime?
+  deleted_at     DateTime?                 // Soft delete support
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  tenant         Tenant?       @relation(fields: [tenant_id], references: [id], onDelete: SetNull)
+  spreadsheet    Spreadsheet   @relation(fields: [spreadsheet_id], references: [id], onDelete: Cascade)
+  tabAccess      UserTabAccess[]
+  rows           SheetRow[]
+
+  @@unique([spreadsheet_id, tab_name])
+  @@index([tenant_id])
+}
+
+// ── Sheet Row Cache (Neon-backed, survives Vercel cold starts) ─────────────
+model SheetRow {
+  id             String   @id @default(uuid())
+  spreadsheet_id String
+  tab_name       String
+  row_index      Int                        // 1-based row index in the Google Sheet
+  data           Json                       // { "Column Header": "value", ... }
+  search_vector  String?                    @db.Text   // Concatenated text for full-text search
+  created_by     String?
+  modified_by    String?
+  tenant_id      String?
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  tenant         Tenant?        @relation(fields: [tenant_id], references: [id], onDelete: SetNull)
+  spreadsheet    Spreadsheet    @relation(fields: [spreadsheet_id], references: [id], onDelete: Restrict)
+  tab            SpreadsheetTab @relation(fields: [spreadsheet_id, tab_name], references: [spreadsheet_id, tab_name], onDelete: Restrict)
+
+  @@unique([spreadsheet_id, tab_name, row_index])
+  @@index([spreadsheet_id, tab_name])
+  @@index([tenant_id])
+}
+
+// ── Tab-Level Access Grants ────────────────────────────────────────────────
+model UserTabAccess {
+  id             String   @id @default(uuid())
+  user_id        String                     // references User.login_id
+  spreadsheet_id String                     // references Spreadsheet.id
+  tab_name       String
+  granted_by     String                     // login_id of admin who granted
+  tenant_id      String?
+  granted_at     DateTime @default(now())
+
+  tenant         Tenant?        @relation(fields: [tenant_id], references: [id], onDelete: SetNull)
+  user           User           @relation("UserToTabAccess", fields: [user_id], references: [login_id], onDelete: Cascade)
+  spreadsheet    Spreadsheet    @relation(fields: [spreadsheet_id], references: [id], onDelete: Cascade)
+  tab            SpreadsheetTab @relation(fields: [spreadsheet_id, tab_name], references: [spreadsheet_id, tab_name], onDelete: Cascade)
+
+  @@unique([user_id, spreadsheet_id, tab_name])
+  @@index([user_id])
+  @@index([spreadsheet_id, tab_name])
+  @@index([tenant_id])
+}
+
+// ── Platform Audit Log ────────────────────────────────────────────────────
+model AuditLog {
+  id               String   @id @default(uuid())
+  actor_id         String?                  // Set to null if user deleted, preserving history
+  actor_name       String
+  actor_role       String
+  action_type      String
+  target_sheet_name String?
+  target_tab_name   String?
+  target_row_id     String?
+  before_snapshot   Json?
+  after_snapshot    Json?
+  ip_address        String?
+  metadata          Json?
+  tenant_id         String?
+  timestamp         DateTime @default(now())
+
+  tenant Tenant? @relation(fields: [tenant_id], references: [id], onDelete: SetNull)
+  actor  User?   @relation("ActorToAuditLog", fields: [actor_id], references: [id], onDelete: SetNull)
+
+  @@index([actor_id])
+  @@index([action_type])
+  @@index([timestamp])
+  @@index([tenant_id])
+  @@index([target_sheet_name, target_tab_name])
+}
+
+// ── Activity Log ───────────────────────────────────────────────────────
 model ActivityLog {
-  id         String   @id @default(uuid())
-  action     String
-  user       String
-  details    String?
-  timestamp  DateTime @default(now())
+  id        String   @id @default(uuid())
+  action    String
+  user      String
+  details   String?
+  tenant_id String?
+  timestamp DateTime @default(now())
+
+  tenant    Tenant?  @relation(fields: [tenant_id], references: [id], onDelete: SetNull)
+
+  @@index([tenant_id])
+  @@index([timestamp])
+}
+
+// ── Google OAuth Tokens ────────────────────────────────────────────────────
+model GoogleOAuthToken {
+  id             String   @id @default(uuid())
+  owner_login_id String   @unique
+  google_email   String
+  access_token   String   @db.Text           // Should be stored encrypted (using iv)
+  refresh_token  String   @db.Text           // Should be stored encrypted (using iv)
+  iv             String                      // Initialization Vector for encryption (Mandatory)
+  expiry         DateTime
+  scope          String   @default("https://www.googleapis.com/auth/spreadsheets.readonly https://www.googleapis.com/auth/drive.metadata.readonly")
+  tenant_id      String?
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  tenant         Tenant?  @relation(fields: [tenant_id], references: [id], onDelete: SetNull)
+
+  @@index([owner_login_id])
+  @@index([tenant_id])
 }

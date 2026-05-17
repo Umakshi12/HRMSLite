@@ -2,11 +2,11 @@ import db from './db.js';
 import * as sheetsAPI from './googleSheetsService.js';
 import { hashPassword } from './auth.js';
 
-const ADMIN_EMAIL = 'admin@staffurs.com';
-const ADMIN_PASSWORD = 'admin123456';
+const ADMIN_EMAIL = 'admin@sheetsync.pro';
+const ADMIN_PASSWORD = 'Admin@123456';
 
 const bootstrap = async () => {
-  console.log('🚀 Starting Production Bootstrap...');
+  console.log('🚀 Starting SheetSync Pro Bootstrap...');
 
   try {
     // 1. Ensure core sheets exist
@@ -34,7 +34,7 @@ const bootstrap = async () => {
       console.log(`Creating initial admin: ${ADMIN_EMAIL}`);
       const hashedPassword = await hashPassword(ADMIN_PASSWORD);
       const row = [
-        'staffurs_admin01',
+        'sheetsync_admin01',
         ADMIN_EMAIL,
         hashedPassword,
         'Super Admin',

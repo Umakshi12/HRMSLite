@@ -1,0 +1,227 @@
+@baseUrl = http://localhost:5000/api
+@token = REPLACE_THIS_WITH_YOUR_JWT_TOKEN
+
+### ==========================================
+### 1. PUBLIC API & AUTHENTICATION
+### ==========================================
+
+### Health Check (No Auth)
+GET http://localhost:5000/health
+
+### Root Ping (No Auth)
+GET http://localhost:5000/
+
+### Login (Returns JWT Token - Copy and paste it in @token variable above)
+POST {{baseUrl}}/login
+Content-Type: application/json
+
+{
+  "identifier": "your_admin_username_or_email",
+  "password": "your_password"
+}
+
+### Check Google OAuth Status
+GET {{baseUrl}}/auth/google/status
+Authorization: Bearer {{token}}
+
+
+### ==========================================
+### 2. CORE DATA & SPREADSHEET APIs
+### ==========================================
+
+### Get Sheet Summary
+GET {{baseUrl}}/get-sheet-summary
+Authorization: Bearer {{token}}
+
+### Get Sheet Data (Pagination)
+GET {{baseUrl}}/get-sheet-data?sheet=Japa&page=1&limit=50
+Authorization: Bearer {{token}}
+
+### Export Sheet to CSV (Admin/Super Admin only)
+GET {{baseUrl}}/export-sheet?sheet=Japa
+Authorization: Bearer {{token}}
+
+### Get Filter Options
+GET {{baseUrl}}/get-filter-options?sheet=Japa
+Authorization: Bearer {{token}}
+
+### Apply Filters (Standard Search)
+POST {{baseUrl}}/apply-filters
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "sheet": "Japa",
+  "filters": {
+    "search": "Test"
+  },
+  "page": 1,
+  "limit": 50
+}
+
+### AI Semantic Search (Requires Mistral API Key in .env)
+POST {{baseUrl}}/ai-search
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "sheet": "Japa",
+  "query": "Show me candidates who are from Mumbai and have 2 years of experience"
+}
+
+### Check Mobile (Duplicate check)
+GET {{baseUrl}}/check-mobile?mobile=9876543210
+Authorization: Bearer {{token}}
+
+
+### ==========================================
+### 3. DATA MUTATION (ADD / EDIT / DELETE)
+### ==========================================
+
+### Add Candidate
+POST {{baseUrl}}/add-candidate
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "sheet": "Japa",
+  "candidate": {
+    "Name": "John Doe",
+    "Mobile No": "9876543210",
+    "City": "Mumbai"
+  }
+}
+
+### Edit Candidate
+PUT {{baseUrl}}/edit-candidate
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "sr_no": 1,
+  "row_index": 2,
+  "sheet": "Japa",
+  "target_sheet": "Japa",
+  "updated_fields": {
+    "City": "Delhi"
+  }
+}
+
+### Remove Candidate
+DELETE {{baseUrl}}/remove-candidate
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "sr_no": 1,
+  "row_index": 2,
+  "sheet": "Japa"
+}
+
+
+### ==========================================
+### 4. USER MANAGEMENT (Admin / Super Admin)
+### ==========================================
+
+### Get Users List
+GET {{baseUrl}}/get-users
+Authorization: Bearer {{token}}
+
+### Get Admin Dashboard (Super Admin only)
+GET {{baseUrl}}/get-admin-dashboard
+Authorization: Bearer {{token}}
+
+### Grant Access (Create new user/admin)
+POST {{baseUrl}}/grant-access
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "identifier": "newuser",
+  "password": "password123",
+  "role": "user",
+  "name": "New Employee",
+  "phone": "1234567890",
+  "sheet_access": ["Japa"]
+}
+
+### Update User Profile
+POST {{baseUrl}}/update-profile
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "target_login_id": "newuser",
+  "name": "Updated Employee Name",
+  "sheet_access": ["Japa", "Driver"]
+}
+
+### Toggle User Status (active/inactive)
+PUT {{baseUrl}}/toggle-user-status
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "target_login_id": "newuser",
+  "status": "inactive"
+}
+
+### Send Credentials via Email/SMS
+POST {{baseUrl}}/send-credentials
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "target_login_id": "newuser",
+  "channel": "email"
+}
+
+### Remove User
+DELETE {{baseUrl}}/remove-user
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "target_login_id": "newuser"
+}
+
+
+### ==========================================
+### 5. SPREADSHEET REGISTRY & SYNC
+### ==========================================
+
+### Get Registered Spreadsheets
+GET {{baseUrl}}/spreadsheets
+Authorization: Bearer {{token}}
+
+### Sync Specific Spreadsheet
+POST {{baseUrl}}/spreadsheets/YOUR_SHEET_ID_HERE/sync
+Authorization: Bearer {{token}}
+
+### Sync All Active Spreadsheets
+POST {{baseUrl}}/spreadsheets/sync-all
+Authorization: Bearer {{token}}
+
+### Vercel Cron Sync
+GET http://localhost:5000/cron/sync-spreadsheets
+
+
+### ==========================================
+### 6. LOGS & CACHE
+### ==========================================
+
+### Get Activity Log
+GET {{baseUrl}}/get-activity-log?page=1&limit=50
+Authorization: Bearer {{token}}
+
+### Get Prisma Audit Logs
+GET {{baseUrl}}/audit-logs?page=1&limit=50
+Authorization: Bearer {{token}}
+
+### Get Cache Stats
+GET {{baseUrl}}/cache-stats
+Authorization: Bearer {{token}}
+
+### Clear Cache
+POST {{baseUrl}}/clear-cache
+Authorization: Bearer {{token}}

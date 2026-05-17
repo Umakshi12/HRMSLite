@@ -3,13 +3,15 @@ import { v4 as uuidv4 } from 'uuid';
 import { sendWelcomeEmail } from './emailService.js';
 import { hashPassword, comparePassword } from './auth.js';
 import cache from './cache.js';
+import prisma from './prisma/client.js';
 import { ChatMistralAI } from '@langchain/mistralai';
 import { PromptTemplate } from '@langchain/core/prompts';
 import { StructuredOutputParser } from '@langchain/core/output_parsers';
 import { z as zod } from 'zod';
 
-const FALLBACK_SHEETS = ['Japa', 'Elderly Care', 'Patient Care', 'Newborn Baby Care', 'Cook', 'Driver', 'Maid / Housekeeping'];
+const FALLBACK_SHEETS = [];
 const EXCLUDED_SHEETS = new Set(['users', 'activitylog', 'activity_logs', 'activity logs', 'config', 'spreadsheetregistry', 'spreadsheet_registry', 'google_sheets', 'sheet_access_grants']);
+const activeSyncs = new Map();
 
 class ProductionDatabase {
   resolveHeaderIndex(headers, aliases) {
@@ -49,15 +51,26 @@ class ProductionDatabase {
 
   async getCandidateSheets(user) {
     const nr = this.normalizeRole(user?.role);
-    const cacheKey = (nr === 'super_admin' || nr === 'admin') ? 'sheet-names-admin' : `sheet-names-${user?.login_id || 'anon'}`;
+    const cacheKey = nr === 'super_admin' ? 'sheet-names-super-admin' : `sheet-names-${user?.login_id || 'anon'}`;
     return cache.getOrFetch(cacheKey, async () => {
       try {
         const allSheets = await this._getAllSheetsFromRegistry();
         const candidateSheets = allSheets.filter((s) => !EXCLUDED_SHEETS.has(String(s.name).toLowerCase()));
         
-        // If super_admin or admin, they see everything
-        if (nr === 'super_admin' || nr === 'admin') {
+        // Super admin sees everything
+        if (nr === 'super_admin') {
           return candidateSheets.map(s => s.name);
+        }
+
+        // Admin sees ONLY tabs they have been granted access to
+        if (nr === 'admin') {
+          const grants = await prisma.userTabAccess.findMany({
+            where: { user_id: user.login_id }
+          });
+          const grantedNames = grants.map(g => g.tab_name);
+          return candidateSheets
+            .filter(s => grantedNames.includes(s.name))
+            .map(s => s.name);
         }
 
         // Users only see explicitly granted sheets from sheet_access_grants
@@ -133,55 +146,32 @@ class ProductionDatabase {
     return this.getCandidateSheets(user);
   }
 
-  normalizeCandidate(raw = {}, fallbackSheet = '') {
-    const get = (...keys) => {
-      for (const key of keys) {
-        if (raw[key] !== undefined && raw[key] !== null && raw[key] !== '') return raw[key];
-      }
-      return '';
-    };
-    return {
-      sr_no: Number(get('sr', 'sr_', 'sr_no', 'sr._no', 'sr._')) || 0,
-      name: get('name'),
-      address: get('address'),
-      state: get('state'),
-      marital_status: get('marital_status'),
-      timing: get('timing'),
-      area: get('area'),
-      experience: get('experience'),
-      education: get('education'),
-      dob: get('dob'),
-      age: get('age'),
-      gender: get('gender'),
-      salary: Number(get('salary')) || 0,
-      mobile: String(get('mobile_no', 'mobile')),
-      verification: String(get('verification', 'status') || 'not verified').toLowerCase(),
-      description: get('description'),
-      since: get('since'),
-      added_by: get('added_by', 'addedby'),
-      updated_by: get('updated_by', 'updatedby'),
-      last_updated: get('last_updated', 'lastupdated', 'updatedon'),
-      last_message: get('last_message', 'lastmessage', 'notes'),
-      sheet: get('_sheet') || fallbackSheet,
-      _sheet: get('_sheet') || fallbackSheet,
-    };
+  // normalizeCandidate REMOVED — all sheet data is now returned as-is from rowsToObjects()
+  async getSpreadsheetIdForTab(sheetName) {
+    const spreadsheets = await this.getRegisteredSpreadsheets();
+    const reg = spreadsheets.find(ss => ss.name === sheetName || ss.tab_name === sheetName);
+    return reg ? reg.sheet_id : undefined;
   }
 
-  /** Cached sheet data fetch - the key performance fix */
+  /** Cached sheet data fetch — returns raw dynamic objects keyed by actual header names */
   async getCachedSheetData(sheetName) {
     const cacheKey = `sheet:${sheetName}`;
     return cache.getOrFetch(cacheKey, async () => {
-      // Check if it's a dynamic spreadsheet
+      // Check Neon SheetRow cache first
       const spreadsheets = await this.getRegisteredSpreadsheets();
-      const dynamicSheet = spreadsheets.find(ss => ss.name === sheetName);
-      if (dynamicSheet) {
-        const rows = await this.getSheetDataForSpreadsheet(dynamicSheet.sheet_id);
-        return rows.map((row) => this.normalizeCandidate(row, sheetName));
+      const reg = spreadsheets.find(ss => ss.name === sheetName || ss.tab_name === sheetName);
+
+      let rawRows;
+      if (reg) {
+        rawRows = await this.getSheetDataForSpreadsheet(reg.sheet_id);
+      } else {
+        const rows = await sheetsAPI.getSheetDataFull(sheetName);
+        rawRows = sheetsAPI.rowsToObjects(rows);
       }
 
-      const rows = await sheetsAPI.getSheetData(`${sheetName}!A:Z`);
-      return sheetsAPI.rowsToObjects(rows).map((row) => this.normalizeCandidate(row, sheetName));
-    }, 2 * 60 * 1000); // 2 minutes for direct sheets
+      // Return raw dynamic objects — no normalizeCandidate, preserve all columns
+      return rawRows.map(row => ({ ...row, _sheet: sheetName }));
+    }, 2 * 60 * 1000);
   }
 
   /** Load all candidate data across sheets with caching */
@@ -202,96 +192,66 @@ class ProductionDatabase {
   async login(identifier, password) {
     try {
       console.log(`[Login] Attempt for: ${identifier}`);
-      let rows = await sheetsAPI.getSheetData('Users!A:K');
-      if (!rows || rows.length < 2) {
-        console.warn('[Login] Users sheet is empty. Auto-seeding default super_admin...');
-        const defaultAdmin = [
-          'admin_root',
-          'admin@staffurs.com',
-          await hashPassword('admin123'),
-          'super_admin',
-          'active',
-          'Initial system account',
-          'All',
-          new Date().toISOString(),
-          'System',
-          '100'
-        ];
-        await sheetsAPI.ensureSheetExists('Users', ['Login ID','Identifier','Password','Role','Status','Notes','Sheet Access','Created At','Created By','Max Users']);
-        await sheetsAPI.appendRow('Users!A:J', defaultAdmin);
-        // Refresh rows after seeding
-        rows = await sheetsAPI.getSheetData('Users!A:K');
-      }
-
-      let users = sheetsAPI.rowsToObjects(rows);
-      console.log(`[Login] Found ${users.length} valid user records in sheet.`);
-
-      if (users.length === 0) {
-        console.warn('[Login] No valid users found. Auto-seeding default super_admin...');
-        const defaultAdmin = [
-          'admin_root',
-          'admin@staffurs.com',
-          await hashPassword('admin123'),
-          'super_admin',
-          'active',
-          'Initial system account',
-          'All',
-          new Date().toISOString(),
-          'System',
-          '100'
-        ];
-        await sheetsAPI.ensureSheetExists('Users', ['Login ID','Identifier','Password','Role','Status','Notes','Sheet Access','Created At','Created By','Max Users']);
-        await sheetsAPI.appendRow('Users!A:J', defaultAdmin);
-        // Refresh rows after seeding
-        rows = await sheetsAPI.getSheetData('Users!A:K');
-        users = sheetsAPI.rowsToObjects(rows);
-        console.log(`[Login] Successfully seeded and reloaded ${users.length} users.`);
-      }
-
-      let user = users.find(u => u.email === identifier || u.identifier === identifier || u.login_id === identifier);
       
+      const user = await prisma.user.findFirst({
+        where: {
+          OR: [
+            { identifier: identifier },
+            { login_id: identifier }
+          ]
+        },
+        include: {
+          tabAccess: true
+        }
+      });
+
       if (!user) {
         console.warn(`[Login] No user found matching identifier: ${identifier}`);
-        const available = users.slice(0, 3).map(u => u.identifier || u.email || u.login_id);
-        console.log(`[Login] Available identifiers (sample): ${available.join(', ')}`);
         return { success: false, message: 'Invalid credentials' };
       }
 
-      let isMatch = false;
-      if (user.password?.startsWith('$2')) {
-        isMatch = await comparePassword(password, user.password);
-      } else {
-        isMatch = (password === user.password || password === user.pass);
+      if (user.status !== 'active') {
+        console.warn(`[Login] User account is ${user.status}: ${identifier}`);
+        return { success: false, message: 'Account is inactive' };
       }
 
-      if (isMatch) {
-        console.log(`[Login] Success for user: ${user.identifier || user.email || user.login_id}`);
-        
-        // Fail-safe: Force super_admin for the root account
-        let role = this.normalizeRole(user.role);
-        if (user.login_id === 'admin_root' || user.identifier === 'admin@staffurs.com' || user.email === 'admin@staffurs.com') {
-          role = 'super_admin';
+      const isMatch = await comparePassword(password, user.password);
+      if (!isMatch) {
+        console.warn(`[Login] Password mismatch for: ${identifier}`);
+        return { success: false, message: 'Invalid credentials' };
+      }
+
+      console.log(`[Login] Success for user: ${user.login_id} (${user.role})`);
+      
+      // Update last login
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { last_login: new Date() }
+      });
+      
+      // SECURITY: Audit log successful login
+      await this.logActivity({
+        action: 'USER_LOGIN',
+        actor: user.login_id,
+        details: `Login via ${identifier}`
+      });
+
+      return {
+        success: true,
+        user: {
+          id: user.id,
+          login_id: user.login_id,
+          identifier: user.identifier,
+          role: this.normalizeRole(user.role),
+          name: user.name,
+          status: user.status,
+          tenant_id: user.tenant_id,
+          sheet_access: user.tabAccess.map(a => a.tab_name)
         }
-
-        return {
-          success: true,
-          user: {
-            login_id: user.login_id || user['login id'] || '',
-            identifier: user.email || user.identifier || '',
-            role,
-            display_role: this.displayRole(role),
-            sheet_access: this.safeParseAccess(user.sheet_access),
-            created_by: user.created_by || user['created by'] || '',
-            max_user_quota: parseInt(user.max_users || user['max users'] || 10),
-          }
-        };
-      } else {
-        console.warn(`[Login] Password mismatch for user: ${identifier}`);
-        return { success: false, message: 'Invalid credentials' };
-      }
+      };
     } catch (err) {
-      console.error('Login Error:', err);
-      return { success: false, message: 'Database connection failed' };
+      console.error('Login error:', err);
+      return { success: false, message: 'Server error during login' };
     }
   }
 
@@ -302,114 +262,323 @@ class ProductionDatabase {
   }
 
   async grantAccess(data) {
-    const newLoginId = 'staffurs_' + Math.random().toString(36).slice(2, 8);
+    const newLoginId = 'sheetsync_' + Math.random().toString(36).slice(2, 8);
     const tempPassword = Math.random().toString(36).slice(-8);
     try {
       const hashedPassword = await hashPassword(tempPassword);
       const normalizedRole = this.normalizeRole(data.role || 'user');
-      // Columns: Login ID | Identifier | Password | Role | Status | Notes | Sheet Access | Created At | Created By | Max Users
-      const row = [
-        newLoginId,
-        data.identifier,
-        hashedPassword,
-        normalizedRole,
-        'active',
-        data.notes || '',
-        JSON.stringify(data.sheet_access || []),
-        new Date().toISOString(),
-        data.created_by || data.added_by || '',
-        normalizedRole === 'admin' ? String(parseInt(data.max_users) || 10) : '',
-      ];
-      await sheetsAPI.ensureSheetExists('Users', ['Login ID','Identifier','Password','Role','Status','Notes','Sheet Access','Created At','Created By','Max Users']);
-      await sheetsAPI.appendRow('Users!A:J', row);
-      const emailSent = await sendWelcomeEmail(data.identifier, newLoginId, tempPassword);
-      await this.logActivity({ action: 'Granted Access', user: data.created_by || 'Admin', details: `Created ${normalizedRole} account for ${data.identifier}` });
-      return { success: true, login_id: newLoginId, password: tempPassword, message: emailSent ? 'Access granted and welcome email sent.' : 'Access granted but email failed to send.' };
+      
+      const newUser = await prisma.user.create({
+        data: {
+          login_id: newLoginId,
+          identifier: data.identifier,
+          phone: data.phone || null,
+          password: hashedPassword,
+          role: normalizedRole,
+          status: 'active',
+          notes: data.notes || '',
+          max_user_quota: normalizedRole === 'admin' ? (parseInt(data.max_users) || 10) : 10,
+          created_by: data.created_by || data.added_by || 'Admin'
+        }
+      });
+
+      // Grant tab access
+      if (data.sheet_access && Array.isArray(data.sheet_access)) {
+        for (const tab of data.sheet_access) {
+          const tabData = await prisma.spreadsheetTab.findFirst({ where: { tab_name: tab } });
+          if (tabData) {
+            await prisma.userTabAccess.create({
+              data: {
+                user_id: newLoginId,
+                spreadsheet_id: tabData.spreadsheet_id,
+                tab_name: tab,
+                granted_by: data.created_by || 'Admin'
+              }
+            });
+          }
+        }
+      }
+
+      // Send email and SMS
+      const isEmail = data.identifier && data.identifier.includes('@');
+      const hasPhone = !isEmail || data.phone;
+
+      let emailSent = false;
+      if (isEmail) {
+        emailSent = await sendWelcomeEmail(data.identifier, newLoginId, tempPassword);
+      }
+
+      if (hasPhone && process.env.TWILIO_ACCOUNT_SID) {
+        const phone = data.phone || (!isEmail ? data.identifier : null);
+        if (phone) {
+          try {
+            const twilio = (await import('twilio')).default;
+            const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+            await client.messages.create({
+              body: `HRMS Access Granted\nLogin ID: ${newLoginId}\nPassword: ${tempPassword}\nLogin: ${process.env.FRONTEND_URL || 'http://localhost:5173'}`,
+              from: process.env.TWILIO_PHONE_NUMBER,
+              to: phone.startsWith('+') ? phone : `+91${phone}`
+            });
+          } catch (smsErr) {
+            console.warn('SMS failed (non-fatal):', smsErr.message);
+          }
+        }
+      }
+
+      await this.logActivity({ action: 'GRANT_ACCESS', actor: data.created_by || 'Admin', details: `Created ${normalizedRole} account for ${data.identifier}` });
+      
+      return { 
+        success: true, 
+        login_id: newLoginId, 
+        password: tempPassword, 
+        message: emailSent ? 'Access granted and welcome email sent.' : 'Access granted. Welcome message sent.' 
+      };
     } catch (err) {
       console.error('Grant Access Error:', err);
-      return { success: false, message: 'Could not grant access. Ensure "Users" sheet exists.' };
+      // SECURITY: Generic error message to prevent leaking system details
+      return { success: false, message: 'Could not grant access. Please check inputs or contact Super Admin.' };
     }
   }
 
   // getUsers: if created_by is provided, filter to only that admin's users (admin scope)
-  async getUsers(created_by = null) {
-    const rows = await sheetsAPI.getSheetData('Users!A:J');
-    let users = sheetsAPI.rowsToObjects(rows);
-    if (created_by) {
-      users = users.filter(u => (u.created_by || u['created by'] || '') === created_by);
+  async getUsers(viewer_login_id, viewer_role = 'user') {
+    try {
+      const isSuper = this.normalizeRole(viewer_role) === 'super_admin';
+      
+      const users = await prisma.user.findMany({
+        where: {
+          // Super Admins see everyone. Admins see themselves + users they created.
+          ...(isSuper ? {} : {
+            OR: [
+              { created_by: viewer_login_id },
+              { login_id: viewer_login_id }
+            ]
+          })
+        },
+        include: {
+          tabAccess: true
+        },
+        orderBy: { created_at: 'desc' }
+      });
+
+      return {
+        users: users.map(u => ({
+          login_id: u.login_id,
+          identifier: u.identifier,
+          role: u.role,
+          display_role: this.displayRole(u.role),
+          status: u.status,
+          sheet_access: u.tabAccess.map(a => a.tab_name),
+          max_user_quota: u.max_user_quota,
+          created_by: u.created_by,
+          created_at: u.created_at,
+        }))
+      };
+    } catch (err) {
+      console.error('getUsers error:', err);
+      return { users: [] };
     }
-    return {
-      users: users.map(u => {
-        const rawRole = u.role || 'user';
-        return {
-          login_id: u.login_id || u['login id'] || '',
-          identifier: u.email || u.identifier || u.phone || '',
-          role: this.normalizeRole(rawRole),
-          display_role: this.displayRole(rawRole),
-          status: u.status || 'active',
-          sheet_access: this.safeParseAccess(u.sheet_access || u['sheet access'] || '[]'),
-          max_user_quota: parseInt(u.max_users || u['max users'] || 10),
-          created_by: u.created_by || u['created by'] || '',
-          created_at: u.created_at || u['created at'] || '',
-        };
-      }).filter(u => u.status !== 'inactive')
-    };
   }
 
   // Check if a user belongs to an admin (for scoped operations)
   async checkUserOwnership(admin_login_id, target_login_id) {
-    const rows = await sheetsAPI.getSheetData('Users!A:J');
-    const users = sheetsAPI.rowsToObjects(rows);
-    const target = users.find(u => (u.login_id || u['login id'] || '') === target_login_id);
-    if (!target) return false;
-    return (target.created_by || target['created by'] || '') === admin_login_id;
+    const user = await prisma.user.findUnique({
+      where: { login_id: target_login_id },
+      select: { created_by: true }
+    });
+    return user?.created_by === admin_login_id;
   }
 
-  // Get single user by login_id
   async getUserById(login_id) {
-    const rows = await sheetsAPI.getSheetData('Users!A:J');
-    const users = sheetsAPI.rowsToObjects(rows);
-    const u = users.find(u => (u.login_id || u['login id'] || '') === login_id);
-    if (!u) return null;
-    return { login_id: u.login_id, role: this.normalizeRole(u.role), identifier: u.identifier || u.email };
+    const user = await prisma.user.findUnique({
+      where: { login_id },
+      include: { tabAccess: true }
+    });
+    if (!user) return null;
+    return {
+      login_id: user.login_id,
+      role: user.role,
+      identifier: user.identifier,
+      sheet_access: user.tabAccess.map(a => a.tab_name)
+    };
   }
 
-  // Check quota for an admin before creating a new user
   async checkAdminQuota(admin_login_id) {
-    const usersResult = await this.getUsers(admin_login_id);
-    const adminRecord = await this.getUserById(admin_login_id);
-    const rows = await sheetsAPI.getSheetData('Users!A:J');
-    const users = sheetsAPI.rowsToObjects(rows);
-    const adminRow = users.find(u => (u.login_id || u['login id']) === admin_login_id);
-    const max = parseInt(adminRow?.max_users || adminRow?.['max users'] || 10);
-    const used = usersResult.users.length;
+    const admin = await prisma.user.findUnique({
+      where: { login_id: admin_login_id },
+      select: { max_user_quota: true }
+    });
+    const used = await prisma.user.count({
+      where: { created_by: admin_login_id, status: 'active' }
+    });
+    const max = admin?.max_user_quota || 10;
     return { canCreate: used < max, used, max };
   }
 
-  // Super admin global dashboard: all admins + quota usage
+  async updateUserProfile(reqData) {
+    const { target_login_id, updated_by, sheet_access } = reqData;
+    try {
+      const allowedFields = ['identifier', 'phone', 'name'];
+      const updateData = {};
+      
+      // SECURITY: Mass assignment protection - only allow specific fields
+      allowedFields.forEach(field => {
+        if (reqData[field] !== undefined) updateData[field] = reqData[field];
+      });
+
+      await prisma.user.update({
+        where: { login_id: target_login_id },
+        data: updateData
+      });
+
+      // Replace sheet access grants if provided
+      if (Array.isArray(sheet_access)) {
+        // Delete old grants
+        await prisma.userTabAccess.deleteMany({ where: { user_id: target_login_id } });
+        // Create new grants
+        for (const tab of sheet_access) {
+          const tabData = await prisma.spreadsheetTab.findFirst({ where: { tab_name: tab } });
+          if (tabData) {
+            await prisma.userTabAccess.create({
+              data: {
+                user_id: target_login_id,
+                spreadsheet_id: tabData.spreadsheet_id,
+                tab_name: tab,
+                granted_by: updated_by || 'super_admin'
+              }
+            });
+          }
+        }
+      }
+
+      await this.logActivity({
+        action: 'UPDATE_PROFILE',
+        actor: updated_by,
+        details: `Updated profile for ${target_login_id}`
+      });
+
+      return { success: true };
+    } catch (err) {
+      return { success: false, message: err.message };
+    }
+  }
+
+  async updateUserRights(reqData) {
+    const { target_login_id, role, sheet_access, updated_by } = reqData;
+    try {
+      const updateData = {};
+      if (role !== undefined) {
+        updateData.role = role;
+      }
+      
+      // Also allow other profile fields if passed
+      const allowedFields = ['identifier', 'phone', 'name'];
+      allowedFields.forEach(field => {
+        if (reqData[field] !== undefined) updateData[field] = reqData[field];
+      });
+
+      await prisma.user.update({
+        where: { login_id: target_login_id },
+        data: updateData
+      });
+
+      // Replace sheet access grants if provided
+      if (Array.isArray(sheet_access)) {
+        // Delete old grants
+        await prisma.userTabAccess.deleteMany({ where: { user_id: target_login_id } });
+        // Create new grants
+        for (const tab of sheet_access) {
+          const tabData = await prisma.spreadsheetTab.findFirst({ where: { tab_name: tab } });
+          if (tabData) {
+            await prisma.userTabAccess.create({
+              data: {
+                user_id: target_login_id,
+                spreadsheet_id: tabData.spreadsheet_id,
+                tab_name: tab,
+                granted_by: updated_by || 'super_admin'
+              }
+            });
+          }
+        }
+      }
+
+      await this.logActivity({
+        action: 'UPDATE_RIGHTS',
+        actor: updated_by,
+        details: `Updated rights/profile for ${target_login_id}`
+      });
+
+      return { success: true };
+    } catch (err) {
+      return { success: false, message: err.message };
+    }
+  }
+
+  async removeUser(target_login_id, removed_by) {
+    try {
+      // 1. Delete user tab accesses first to avoid foreign key violations
+      await prisma.userTabAccess.deleteMany({
+        where: { user_id: target_login_id }
+      });
+      // 2. Delete google OAuth tokens if present
+      await prisma.googleOAuthToken.deleteMany({
+        where: { owner_login_id: target_login_id }
+      });
+      // 3. Delete user
+      await prisma.user.delete({
+        where: { login_id: target_login_id }
+      });
+
+      await this.logActivity({
+        action: 'REMOVE_USER',
+        actor: removed_by,
+        details: `Removed user ${target_login_id}`
+      });
+
+      return { success: true };
+    } catch (err) {
+      console.error('removeUser error:', err);
+      return { success: false, message: err.message };
+    }
+  }
+
   async getAdminDashboard() {
-    const rows = await sheetsAPI.getSheetData('Users!A:J');
-    const users = sheetsAPI.rowsToObjects(rows).filter(u => u.status !== 'inactive');
-    const allUsers = await this.getUsers(); // all users
-    const admins = users.filter(u => this.normalizeRole(u.role) === 'admin');
-    return {
-      total_users: users.filter(u => this.normalizeRole(u.role) === 'user').length,
-      total_admins: admins.length,
-      admins: admins.map(a => {
-        const adminLoginId = a.login_id || a['login id'] || '';
-        const theirUsers = allUsers.users.filter(u => u.created_by === adminLoginId);
-        const max = parseInt(a.max_users || a['max users'] || 10);
+    try {
+      const admins = await prisma.user.findMany({
+        where: { 
+          role: 'admin',
+          status: 'active' 
+        }
+      });
+      
+      const adminStats = await Promise.all(admins.map(async (a) => {
+        const used = await prisma.user.count({
+          where: { created_by: a.login_id, status: 'active' }
+        });
         return {
-          login_id: adminLoginId,
-          identifier: a.identifier || a.email || '',
+          login_id: a.login_id,
+          identifier: a.identifier,
           display_role: 'Admin',
-          max_user_quota: max,
-          used_quota: theirUsers.length,
-          quota_pct: Math.round((theirUsers.length / max) * 100),
-          created_at: a.created_at || a['created at'] || '',
+          max_user_quota: a.max_user_quota,
+          used_quota: used,
+          quota_pct: Math.round((used / (a.max_user_quota || 1)) * 100),
+          created_at: a.created_at,
         };
-      }),
-    };
+      }));
+
+      const totalUsers = await prisma.user.count({
+        where: { role: 'user', status: 'active' }
+      });
+
+      return {
+        total_users: totalUsers,
+        total_admins: admins.length,
+        admins: adminStats,
+      };
+    } catch (err) {
+      console.error('getAdminDashboard error:', err);
+      return { total_users: 0, total_admins: 0, admins: [] };
+    }
   }
 
   // ── Candidates (CACHED) ──
@@ -443,76 +612,124 @@ class ProductionDatabase {
         visibleSheets = allRegistered.filter(s => s.is_active && grantedIds.includes(s.sheet_id));
       }
 
-      const sheets = visibleSheets.map(s => ({
-        name: s.tab_name,
-        count: s.candidate_count || 0,
-        verified: s.verified_count || 0
-      }));
+      const sheets = visibleSheets.map(s => {
+        // Aggregate counts from tabs
+        const tabCount = (s.tabs || []).reduce((acc, t) => acc + (t.row_count || 0), 0);
+        return {
+          name: s.name,
+          count: tabCount,
+          verified: 0 // verified_count not in current schema
+        };
+      });
 
       const grandTotal = sheets.reduce((acc, s) => acc + s.count, 0);
-      const grandVerified = sheets.reduce((acc, s) => acc + s.verified, 0);
 
       return { 
         sheets, 
         added_this_month: 0, 
         total: grandTotal, 
-        total_verified: grandVerified 
+        total_verified: 0 
       };
     }, 10 * 60 * 1000);
   }
 
   async addCandidate(sheet, candidate, added_by) {
     try {
-      const rows = await sheetsAPI.getSheetData(`${sheet}!A:U`);
+      const spreadsheetId = await this.getSpreadsheetIdForTab(sheet);
+      const rows = await sheetsAPI.getSheetDataFull(sheet, spreadsheetId);
       if (!rows.length) return { success: false, message: 'Sheet is empty or missing headers' };
       const headers = rows[0];
-      const srIdx = this.resolveHeaderIndex(headers, ['Sr.', 'Sr', 'Sr No', 'Sr. No']);
-      const lastSrNo = rows.length > 1 && srIdx >= 0 ? parseInt(rows[rows.length - 1][srIdx]) || 0 : 0;
-      const sr_no = lastSrNo + 1;
+
+      // Build a row array the same length as headers, all empty
       const row = Array.from({ length: headers.length }, () => '');
       const today = new Date().toLocaleDateString('en-GB');
-      this.setIfHeaderExists(row, headers, ['Name'], candidate.name || '');
-      this.setIfHeaderExists(row, headers, ['Address'], candidate.address || '');
-      this.setIfHeaderExists(row, headers, ['State'], candidate.state || '');
-      this.setIfHeaderExists(row, headers, ['Marital status', 'Marital Status'], candidate.marital_status || '');
-      this.setIfHeaderExists(row, headers, ['Timing'], candidate.timing || '');
-      this.setIfHeaderExists(row, headers, ['Area'], candidate.area || '');
-      this.setIfHeaderExists(row, headers, ['experience', 'Experience'], candidate.experience || '');
-      this.setIfHeaderExists(row, headers, ['Education'], candidate.education || '');
-      this.setIfHeaderExists(row, headers, ['DOB'], candidate.dob || '');
-      this.setIfHeaderExists(row, headers, ['Age'], this.calculateAge(candidate.dob));
-      this.setIfHeaderExists(row, headers, ['Gender'], candidate.gender || '');
-      this.setIfHeaderExists(row, headers, ['Salary'], candidate.salary || 0);
-      this.setIfHeaderExists(row, headers, ['Mobile No', 'Mobile'], candidate.mobile || '');
-      this.setIfHeaderExists(row, headers, ['Verification'], candidate.verification || 'pending');
-      this.setIfHeaderExists(row, headers, ['Description'], candidate.description || '');
-      this.setIfHeaderExists(row, headers, ['Since'], candidate.since || today);
-      this.setIfHeaderExists(row, headers, ['Sr.', 'Sr', 'Sr No', 'Sr. No'], sr_no);
-      this.setIfHeaderExists(row, headers, ['Added By', 'Updated By', 'Modified By'], added_by || 'System');
-      this.setIfHeaderExists(row, headers, ['Last Updated', 'Updated At'], new Date().toISOString());
-      if (candidate.last_message) {
-        let snippet = candidate.last_message;
-        if (snippet.length > 200) snippet = snippet.substring(0, 197) + '...';
-        this.setIfHeaderExists(row, headers, ['Last Message', 'Lastmessage', 'Notes'], snippet);
+
+      // ── Dynamic field mapping: iterate every key in candidate ──
+      // The candidate object keys should match sheet header names (case-insensitive)
+      for (const [key, val] of Object.entries(candidate)) {
+        if (val === undefined || val === null || val === '') continue;
+        this.setIfHeaderExists(row, headers, [key], val);
       }
-      this.setIfHeaderExists(row, headers, ['_sheet'], sheet);
-      await sheetsAPI.appendRow(`${sheet}!A:U`, row);
+
+      // ── Auto-increment Sr. No if header exists ──
+      const srIdx = this.resolveHeaderIndex(headers, ['Sr.', 'Sr', 'Sr No', 'Sr. No', 'S.No', 'SrNo']);
+      if (srIdx >= 0) {
+        const lastSrNo = rows.length > 1 ? (parseInt(rows[rows.length - 1][srIdx]) || 0) : 0;
+        row[srIdx] = lastSrNo + 1;
+      }
+
+      // ── Audit columns: append at end if headers exist, else auto-add ──
+      const createdByIdx = this.resolveHeaderIndex(headers, ['Created By', 'Added By']);
+      const modifiedByIdx = this.resolveHeaderIndex(headers, ['Modified By', 'Updated By']);
+      const createdAtIdx = this.resolveHeaderIndex(headers, ['Created At', 'Added On', 'Since']);
+      const modifiedAtIdx = this.resolveHeaderIndex(headers, ['Modified At', 'Last Updated', 'Updated At']);
+
+      if (createdByIdx >= 0) row[createdByIdx] = added_by || 'System';
+      if (modifiedByIdx >= 0 && modifiedByIdx !== createdByIdx) row[modifiedByIdx] = added_by || 'System';
+      if (createdAtIdx >= 0) row[createdAtIdx] = row[createdAtIdx] || today;
+      if (modifiedAtIdx >= 0) row[modifiedAtIdx] = new Date().toISOString();
+
+      // If none of the audit headers exist, append them
+      if (createdByIdx === -1 && modifiedByIdx === -1) {
+        row.push(added_by || 'System'); // Created By
+        row.push(new Date().toISOString()); // Created At
+        row.push('');                     // Comment
+      }
+
+      await sheetsAPI.appendRow(`${sheet}!A:ZZ`, row, spreadsheetId);
       cache.invalidateSheetData();
-      return { success: true, sr_no };
+
+      await this.logActivity({
+        action: 'ROW_CREATED',
+        actor: added_by || 'System',
+        details: `Added row to ${sheet}`,
+        after_snapshot: candidate,
+        target_tab_name: sheet,
+      });
+
+      return { success: true, sr_no: srIdx >= 0 ? row[srIdx] : null };
     } catch (err) {
       console.error('Add Candidate Error:', err);
-      return { success: false, message: 'Could not add candidate. Ensure sheet exists.' };
+      return { success: false, message: 'Could not add row: ' + err.message };
     }
   }
 
-  async logActivity({ action, user, details }) {
+  async logActivity({ action, actor, details, before_snapshot, after_snapshot, target_tab_name, ip_address } = {}) {
     try {
-      const headers = ['Action', 'User', 'Details', 'Timestamp'];
-      await sheetsAPI.ensureSheetExists('ActivityLog', headers);
-      const row = [action, user, details, new Date().toISOString()];
-      await sheetsAPI.appendRow('ActivityLog!A:D', row);
+      // Ensure actor exists in User table for foreign key constraint
+      let validActorId = actor || 'system';
+      const actorExists = await prisma.user.findUnique({ where: { login_id: validActorId } });
+      
+      if (!actorExists) {
+        // Fallback to the first super_admin found for system actions
+        const superAdmin = await prisma.user.findFirst({ where: { role: 'super_admin' } });
+        validActorId = superAdmin ? superAdmin.login_id : 'system';
+      }
+
+      // Only attempt Prisma log if we have a valid actor in the DB
+      if (validActorId !== 'system') {
+        await prisma.auditLog.create({
+          data: {
+            actor_id:          validActorId,
+            actor_name:        actor || 'System',
+            actor_role:        'system',
+            action_type:       action || 'UNKNOWN',
+            target_tab_name:   target_tab_name || null,
+            before_snapshot:   before_snapshot || undefined,
+            after_snapshot:    after_snapshot  || undefined,
+            ip_address:        ip_address      || null,
+            metadata:          details ? { details } : undefined,
+          },
+        });
+      }
     } catch (err) {
-      console.error('Log Activity Error:', err);
+      // Never crash the main flow due to audit failure
+      console.warn('logActivity (Prisma) warning:', err.message);
+      // Fallback: try Google Sheet log
+      try {
+        await sheetsAPI.ensureSheetExists('ActivityLog', ['Action', 'User', 'Details', 'Timestamp']);
+        await sheetsAPI.appendRow('ActivityLog!A:D', [action, actor || 'system', details || '', new Date().toISOString()]);
+      } catch (_) { /* silent */ }
     }
   }
 
@@ -524,58 +741,128 @@ class ProductionDatabase {
     return { total, logs: allLogs.slice(start, start + limit).reverse() };
   }
 
-  // ── Smart Search with fuzzy matching ──
+  // ── Smart Search — searches ALL row keys dynamically (no hardcoded fields) ──
   smartSearch(allData, query) {
     if (!query || !query.trim()) return allData;
-    const q = query.toLowerCase().trim();
-    const tokens = q.split(/\s+/).filter(Boolean);
+    const cleanQuery = query.toLowerCase().replace(/,/g, ' ').replace(/[^\w\s-]/g, ' ').trim();
+    // Exclude common connector stop-words so they don't block valid results
+    const STOP_WORDS = new Set(['in', 'on', 'at', 'for', 'with', 'and', 'to', 'a', 'the', 'of', 'is', 'are', 'from']);
+    const tokens = cleanQuery.split(/\s+/).filter(t => t && !STOP_WORDS.has(t));
+    if (!tokens.length) return allData;
 
-    // Score each candidate
-    const scored = allData.map(item => {
+    const scored = [];
+    const queryLower = query.toLowerCase().trim();
+
+    for (let i = 0; i < allData.length; i++) {
+      const item = allData[i];
       let score = 0;
-      const searchableText = [
-        item.name, item.address, item.state, item.area,
-        item.experience, item.education, item.description,
-        item.mobile, item.gender, item.timing, item.marital_status,
-        item.verification, item.sheet, item._sheet
-      ].map(v => String(v || '').toLowerCase()).join(' ');
+      let matchedTokensCount = 0;
+
+      // 1. Fast property extraction (zero entries/values allocations)
+      const fieldsMap = {};
+      const fieldValues = [];
+      for (const key in item) {
+        if (key.startsWith('_')) continue;
+        const val = item[key];
+        if (val === undefined || val === null || val === '') continue;
+        const strVal = String(val).toLowerCase();
+        fieldsMap[key] = strVal;
+        fieldValues.push(strVal);
+      }
+
+      const searchableText = fieldValues.join(' ');
 
       // Exact full query match in any field = highest score
-      if (searchableText.includes(q)) score += 100;
+      if (searchableText.includes(queryLower)) score += 100;
 
-      // Per-token matching
-      for (const token of tokens) {
-        if (searchableText.includes(token)) {
-          score += 10;
-          // Bonus for name match
-          if (String(item.name || '').toLowerCase().includes(token)) score += 20;
-          // Bonus for area match
-          if (String(item.area || '').toLowerCase().includes(token)) score += 15;
-          // Bonus for description match
-          if (String(item.description || '').toLowerCase().includes(token)) score += 5;
-        } else {
-          // Fuzzy: check if token is close to any word (1-char difference)
-          const words = searchableText.split(/\s+/);
-          for (const word of words) {
-            if (word.length > 2 && token.length > 2 && this.fuzzyMatch(token, word)) {
-              score += 3;
+      // 2. Per-token matching with early exit
+      let allTokensMatched = true;
+      for (let t = 0; t < tokens.length; t++) {
+        const token = tokens[t];
+        let tokenMatched = false;
+
+        // Field check
+        for (const key in fieldsMap) {
+          const strVal = fieldsMap[key];
+
+          if (key === 'gender') {
+            // Strict exact match for gender field to prevent "male" matching "female"
+            if (strVal === token) {
+              score += 15;
+              tokenMatched = true;
+              break;
+            }
+          } else {
+            if (strVal === token) {
+              score += 10;
+              if (key === 'name') score += 20;
+              if (key === 'area') score += 15;
+              tokenMatched = true;
+              break;
+            } else if (strVal.includes(token)) {
+              const words = strVal.split(/\s+/);
+              if (words.includes(token)) {
+                score += 8;
+                if (key === 'name') score += 15;
+                if (key === 'area') score += 10;
+              } else {
+                score += 4;
+              }
+              tokenMatched = true;
               break;
             }
           }
         }
+
+        // Fuzzy match fallback — limited to primary searchable columns for speed
+        if (!tokenMatched) {
+          const fuzzyFields = ['name', 'area', 'experience'];
+          for (let f = 0; f < fuzzyFields.length; f++) {
+            const val = fieldsMap[fuzzyFields[f]];
+            if (!val) continue;
+            const words = val.split(/\s+/);
+            for (let w = 0; w < words.length; w++) {
+              const word = words[w];
+              if (word.length > 2 && token.length > 2 && this.fuzzyMatch(token, word)) {
+                score += 3;
+                tokenMatched = true;
+                break;
+              }
+            }
+            if (tokenMatched) break;
+          }
+        }
+
+        if (tokenMatched) {
+          matchedTokensCount++;
+        } else {
+          // EARLY EXIT: Save massive CPU cycles by discarding mismatching candidates immediately
+          allTokensMatched = false;
+          break;
+        }
       }
 
+      if (!allTokensMatched) continue;
+
+      // 3. Intent detection: only executed for candidates that match all tokens
       // Intent detection: age ranges
-      const ageMatch = q.match(/(\d+)\s*[-–to]+\s*(\d+)\s*(year|yr|age)/i);
+      const ageMatch = query.toLowerCase().match(/(\d+)\s*[-–to]+\s*(\d+)\s*(year|yr|age)?/i);
       if (ageMatch) {
         const minAge = parseInt(ageMatch[1]);
         const maxAge = parseInt(ageMatch[2]);
         const age = parseInt(item.age) || 0;
         if (age >= minAge && age <= maxAge) score += 30;
+      } else {
+        const singleAgeMatch = query.toLowerCase().match(/(age\s*(\d+))|((\d+)\s*(year|yr)\s*old)/i);
+        if (singleAgeMatch) {
+          const targetAge = parseInt(singleAgeMatch[2] || singleAgeMatch[4]);
+          const age = parseInt(item.age) || 0;
+          if (age === targetAge) score += 30;
+        }
       }
 
       // Intent: salary range  
-      const salaryMatch = q.match(/(\d+)\s*k?\s*[-–to]+\s*(\d+)\s*k?\s*(salary|pay|rupee|₹)?/i);
+      const salaryMatch = query.toLowerCase().match(/(\d+)\s*k?\s*[-–to]+\s*(\d+)\s*k?\s*(salary|pay|rupee|₹)?/i);
       if (salaryMatch) {
         let minSal = parseInt(salaryMatch[1]);
         let maxSal = parseInt(salaryMatch[2]);
@@ -583,21 +870,29 @@ class ProductionDatabase {
         if (maxSal < 1000) maxSal *= 1000;
         const sal = parseInt(item.salary) || 0;
         if (sal >= minSal && sal <= maxSal) score += 30;
+      } else {
+        const singleSalaryMatch = query.toLowerCase().match(/(salary|pay|rupee|₹)\s*(\d+)\s*k?/i) || query.toLowerCase().match(/(\d+)\s*k?\s*(salary|pay|rupee|₹)/i);
+        if (singleSalaryMatch) {
+          let targetSal = parseInt(singleSalaryMatch[2] || singleSalaryMatch[1]);
+          if (query.toLowerCase().includes('k')) targetSal *= 1000;
+          const sal = parseInt(item.salary) || 0;
+          if (sal > 0 && Math.abs(sal - targetSal) / targetSal <= 0.2) score += 30;
+        }
       }
 
       // Intent: experience
-      const expMatch = q.match(/(\d+)\+?\s*(year|yr|exp)/i);
+      const expMatch = query.toLowerCase().match(/(\d+)\+?\s*(year|yr|exp)/i);
       if (expMatch) {
         const years = parseInt(expMatch[1]);
         const exp = String(item.experience || '').toLowerCase();
-        if (exp.includes(`${years}`) || exp.includes('10+') && years <= 10) score += 20;
+        const parsedExp = parseInt(exp.replace(/\D/g, '')) || 0;
+        if (parsedExp >= years || (exp.includes('10+') && years <= 10)) score += 20;
       }
 
-      return { ...item, _score: score };
-    });
+      scored.push({ ...item, _score: score });
+    }
 
     return scored
-      .filter(item => item._score > 0)
       .sort((a, b) => b._score - a._score)
       .map(({ _score, ...item }) => item);
   }
@@ -621,55 +916,67 @@ class ProductionDatabase {
     return diffs + (a.length - ai) + (b.length - bi) <= 1;
   }
 
-  // ── Search & Filters (CACHED + SMART) ──
+  // ── Filters — AND logic: every active condition must match ──
   async applyFilters(sheet, filters, page = 1, limit = 50, user) {
     try {
       let allData = await this.getAllCandidateData(sheet, user);
 
-      // Smart search
+      // Smart text search (must match all tokens)
       if (filters.search) {
         allData = this.smartSearch(allData, filters.search);
       }
 
-      // Structural filters
-      if (filters.gender?.length) {
-        const n = filters.gender.map(g => String(g).toLowerCase());
-        allData = allData.filter(item => n.includes(String(item.gender || '').toLowerCase()));
+      const templateItem = allData[0];
+
+      // Dynamic column filters — filters.columns is { [headerName]: value[] }
+      // Each key in filters.columns narrows the result (AND between keys, OR within values)
+      if (templateItem && filters.columns && typeof filters.columns === 'object') {
+        for (const [col, allowedValues] of Object.entries(filters.columns)) {
+          if (!allowedValues || !allowedValues.length) continue;
+          
+          // Pre-compile criteria once
+          const allowed = allowedValues.map(v => String(v).toLowerCase());
+          const targetCol = col.toLowerCase().replace(/[^a-z0-9]/g, '');
+          const itemKey = Object.keys(templateItem).find(k => 
+            k.toLowerCase().replace(/[^a-z0-9]/g, '') === targetCol
+          );
+
+          if (!itemKey) continue;
+
+          // Zero-allocation loop property check
+          allData = allData.filter(item => {
+            const val = item[itemKey];
+            if (val === undefined || val === null || val === '') return false;
+            return allowed.includes(String(val).toLowerCase());
+          });
+        }
       }
-      if (filters.state?.length) {
-        const n = filters.state.map(s => String(s).toLowerCase());
-        allData = allData.filter(item => n.includes(String(item.state || '').toLowerCase()));
+
+      // Legacy named filters (kept for backwards compatibility with existing frontend)
+      if (templateItem) {
+        for (const [filterKey, filterVals] of Object.entries(filters)) {
+          if (!filterVals?.length || ['search', 'salary_min', 'salary_max', 'columns'].includes(filterKey)) continue;
+          
+          // Pre-compile criteria once
+          const allowed = filterVals.map(v => String(v).toLowerCase());
+          const normalizedKey = filterKey.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+          const itemKey = Object.keys(templateItem).find(k => 
+            k.toLowerCase().replace(/[^a-z0-9]+/g, '_') === normalizedKey
+          );
+
+          if (!itemKey) continue;
+
+          // Zero-allocation loop property check
+          allData = allData.filter(item => {
+            const val = item[itemKey];
+            if (val === undefined || val === null || val === '') return false;
+            return allowed.includes(String(val).toLowerCase());
+          });
+        }
       }
-      if (filters.verification?.length) {
-        const n = filters.verification.map(v => String(v).toLowerCase());
-        allData = allData.filter(item => n.includes(String(item.verification || '').toLowerCase()));
-      }
-      if (filters.experience?.length) {
-        const n = filters.experience.map(v => String(v).toLowerCase());
-        allData = allData.filter(item => n.includes(String(item.experience || '').toLowerCase()));
-      }
-      if (filters.education?.length) {
-        const n = filters.education.map(v => String(v).toLowerCase());
-        allData = allData.filter(item => n.includes(String(item.education || '').toLowerCase()));
-      }
-      if (filters.timing?.length) {
-        const n = filters.timing.map(v => String(v).toLowerCase());
-        allData = allData.filter(item => n.includes(String(item.timing || '').toLowerCase()));
-      }
-      if (filters.marital_status?.length) {
-        const n = filters.marital_status.map(v => String(v).toLowerCase());
-        allData = allData.filter(item => n.includes(String(item.marital_status || '').toLowerCase()));
-      }
-      if (filters.area?.length) {
-        const n = filters.area.map(v => String(v).toLowerCase());
-        allData = allData.filter(item => n.includes(String(item.area || '').toLowerCase()));
-      }
-      if (filters.salary_min) {
-        allData = allData.filter(item => parseInt(item.salary || 0) >= parseInt(filters.salary_min));
-      }
-      if (filters.salary_max) {
-        allData = allData.filter(item => parseInt(item.salary || 0) <= parseInt(filters.salary_max));
-      }
+      
+      if (filters.salary_min) allData = allData.filter(item => Number(item.salary || 0) >= Number(filters.salary_min));
+      if (filters.salary_max) allData = allData.filter(item => Number(item.salary || 0) <= Number(filters.salary_max));
 
       const total = allData.length;
       const start = (page - 1) * limit;
@@ -680,110 +987,129 @@ class ProductionDatabase {
     }
   }
 
+  // Dynamic filter options — builds from all actual column keys in the data
   async getFilterOptions(sheet, user) {
     const cacheKey = `filter-opts:${sheet || 'all'}-${user?.login_id || 'anon'}`;
     return cache.getOrFetch(cacheKey, async () => {
       try {
         const allData = await this.getAllCandidateData(sheet, user);
-        const sets = { state: new Set(), gender: new Set(), education: new Set(), experience: new Set(), marital_status: new Set(), verification: new Set(), timing: new Set(), area: new Set() };
+        // Exclude fields that are high-cardinality or unfilterable to avoid blocking event loop & JSON bloat
+        const EXCLUDED_FIELDS = /email|phone|mobile|contact|website|web|url|name|desc|note|remark|sr_no|sr|s_no|id|charges|salary|address|since|created_at|updated_at|modified_at|dob|age/i;
+
+        // Collect unique values for every column dynamically
+        const columnSets = {};
         for (const item of allData) {
-          if (item.state) sets.state.add(item.state);
-          if (item.gender) sets.gender.add(item.gender);
-          if (item.education) sets.education.add(item.education);
-          if (item.experience) sets.experience.add(item.experience);
-          if (item.marital_status) sets.marital_status.add(item.marital_status);
-          if (item.verification) sets.verification.add(item.verification);
-          if (item.timing) sets.timing.add(item.timing);
-          if (item.area) sets.area.add(item.area);
+          for (const [key, val] of Object.entries(item)) {
+            if (key.startsWith('_') || !val || val === '') continue;
+            if (EXCLUDED_FIELDS.test(key)) continue;
+            if (!columnSets[key]) columnSets[key] = new Set();
+            columnSets[key].add(String(val));
+          }
         }
         const result = {};
-        for (const [k, v] of Object.entries(sets)) result[k] = Array.from(v).sort();
+        for (const [k, v] of Object.entries(columnSets)) {
+          // If cardinality is greater than 100, do not return filter options (no human can select from 100+ checkboxes)
+          if (v.size > 100) continue;
+          result[k] = Array.from(v).sort();
+        }
         return result;
       } catch (err) {
         console.error('Get Filter Options Error:', err);
-        return { state: [], gender: [], education: [], experience: [], marital_status: [], verification: [], timing: [], area: [] };
+        return {};
       }
     }, 5 * 60 * 1000);
   }
 
-  async editCandidate(sr_no, sheet, target_sheet, updated_fields, updated_by) {
+  async editCandidate(sr_no, row_index, sheet, target_sheet, updated_fields, updated_by) {
     try {
-      const rows = await sheetsAPI.getSheetData(`${sheet}!A:U`);
+      const spreadsheetId = await this.getSpreadsheetIdForTab(sheet);
+      const rows = await sheetsAPI.getSheetDataFull(sheet, spreadsheetId);
       if (!rows.length) return { success: false, message: 'Sheet is empty' };
       const originalHeaders = rows[0];
-      const headers = rows[0].map((h) => String(h).toLowerCase().trim().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, ''));
 
-      // Find the row - try sr_no first, then fallback to name+mobile match
+      // Find the row
       let rowIndex = -1;
-      if (sr_no && sr_no !== 0) {
-        rowIndex = await sheetsAPI.findRowIndexByAliases(sheet, ['Sr.', 'Sr', 'Sr. No', 'Sr No'], String(sr_no));
+      if (row_index !== undefined && row_index !== null && row_index !== 'undefined') {
+        rowIndex = parseInt(row_index);
+      } else if (sr_no && sr_no !== 0 && sr_no !== 'undefined') {
+        rowIndex = await sheetsAPI.findRowIndexByAliases(sheet, ['Sr.', 'Sr', 'Sr. No', 'Sr No', 'S.No'], String(sr_no), spreadsheetId);
       }
-      // Fallback: match by name + mobile (more reliable than sr_no)
-      if (rowIndex === -1 && updated_fields.name) {
-        const nameIdx = this.resolveHeaderIndex(originalHeaders, ['Name']);
-        const mobileIdx = this.resolveHeaderIndex(originalHeaders, ['Mobile No', 'Mobile']);
-        for (let i = 1; i < rows.length; i++) {
-          const nameMatch = nameIdx >= 0 && String(rows[i][nameIdx] || '').toLowerCase() === String(updated_fields.name || '').toLowerCase();
-          const mobileMatch = mobileIdx >= 0 && String(rows[i][mobileIdx] || '') === String(updated_fields.mobile || '');
-          if (nameMatch && (mobileMatch || mobileIdx === -1)) { rowIndex = i; break; }
-        }
-      }
-      if (rowIndex === -1) return { success: false, message: 'Candidate not found' };
+      if (rowIndex === -1 || isNaN(rowIndex)) return { success: false, message: 'Row not found' };
 
-      // Ensure existingRow is at least as long as originalHeaders, filling missing with empty string
-      const existingRow = Array.from({ length: originalHeaders.length }, (_, i) => rows[rowIndex][i] !== undefined ? rows[rowIndex][i] : '');
+      // Copy existing row (fill missing cols with '')
+      const existingRow = Array.from({ length: originalHeaders.length }, (_, i) =>
+        rows[rowIndex][i] !== undefined ? rows[rowIndex][i] : ''
+      );
 
-      // Map field names to header indices
-      const fieldMap = {
-        name: ['Name'], address: ['Address'], state: ['State'],
-        marital_status: ['Marital status', 'Marital Status'], timing: ['Timing'],
-        area: ['Area'], experience: ['experience', 'Experience'],
-        education: ['Education'], dob: ['DOB'], age: ['Age'],
-        gender: ['Gender'], salary: ['Salary'],
-        mobile: ['Mobile No', 'Mobile'], verification: ['Verification'],
-        description: ['Description'], since: ['Since'],
-        last_message: ['Last Message', 'Lastmessage', 'Notes'],
-      };
-      Object.entries(updated_fields).forEach(([key, val]) => {
-        const aliases = fieldMap[key];
-        if (aliases) this.setIfHeaderExists(existingRow, originalHeaders, aliases, val);
-      });
-      // Recalculate age from DOB if provided
-      if (updated_fields.dob) {
-        this.setIfHeaderExists(existingRow, originalHeaders, ['Age'], this.calculateAge(updated_fields.dob));
+      // Capture before-snapshot for audit
+      const beforeSnapshot = {};
+      originalHeaders.forEach((h, i) => { beforeSnapshot[h] = existingRow[i]; });
+
+      // ── Dynamic update: iterate every key in updated_fields ──
+      for (const [key, val] of Object.entries(updated_fields)) {
+        if (key.startsWith('_')) continue; // skip internal fields
+        this.setIfHeaderExists(existingRow, originalHeaders, [key], val);
       }
-      this.setIfHeaderExists(existingRow, originalHeaders, ['Updated By', 'Added By', 'Modified By'], updated_by || this.getIfHeaderExists(existingRow, originalHeaders, ['Updated By', 'Added By', 'Modified By']));
-      this.setIfHeaderExists(existingRow, originalHeaders, ['Last Updated', 'Updated At'], new Date().toISOString());
-      
-      if (updated_fields.last_message) {
-        let snippet = updated_fields.last_message;
-        if (snippet.length > 200) snippet = snippet.substring(0, 197) + '...';
-        this.setIfHeaderExists(existingRow, originalHeaders, ['Last Message', 'Lastmessage', 'Notes'], snippet);
-      }
+
+      // ── Audit: update Modified By + Modified Date ONLY (never touch Created By/Date) ──
+      const modifiedByIdx = this.resolveHeaderIndex(originalHeaders, ['Modified By', 'Updated By']);
+      const modifiedAtIdx = this.resolveHeaderIndex(originalHeaders, ['Modified At', 'Last Updated', 'Updated At']);
+      if (modifiedByIdx >= 0) existingRow[modifiedByIdx] = updated_by || 'System';
+      if (modifiedAtIdx >= 0) existingRow[modifiedAtIdx] = new Date().toISOString();
+
       if (target_sheet && target_sheet !== sheet) {
-        this.setIfHeaderExists(existingRow, originalHeaders, ['_sheet'], target_sheet);
-        console.log(`[editCandidate] Moving candidate from ${sheet} (row ${rowIndex}) to ${target_sheet}. Data:`, existingRow);
-        await sheetsAPI.appendRow(`${target_sheet}!A:U`, existingRow);
-        await sheetsAPI.deleteRow(sheet, rowIndex); // Delete from original sheet
+        const targetSpreadsheetId = await this.getSpreadsheetIdForTab(target_sheet) || spreadsheetId;
+        await sheetsAPI.appendRow(`${target_sheet}!A:ZZ`, existingRow, targetSpreadsheetId);
+        await sheetsAPI.deleteRow(sheet, rowIndex, spreadsheetId);
       } else {
-        console.log(`[editCandidate] Updating candidate in ${sheet} at row ${rowIndex}. Data:`, existingRow);
-        await sheetsAPI.updateRow(sheet, rowIndex, existingRow);
+        await sheetsAPI.updateRow(sheet, rowIndex, existingRow, spreadsheetId);
       }
+
       cache.invalidateSheetData();
+
+      const afterSnapshot = {};
+      originalHeaders.forEach((h, i) => { afterSnapshot[h] = existingRow[i]; });
+
+      await this.logActivity({
+        action: 'ROW_UPDATED',
+        actor: updated_by || 'System',
+        details: `Updated row ${sr_no} in ${sheet}`,
+        before_snapshot: beforeSnapshot,
+        after_snapshot: afterSnapshot,
+        target_tab_name: sheet,
+      });
+
       return { success: true };
     } catch (err) {
       console.error('Edit Candidate Error:', err);
-      return { success: false, message: 'Update failed: ' + err.message };
+      return { success: false, message: 'Failed to update candidate information.' };
     }
   }
 
-  async removeCandidate(sr_no, sheet, removed_by) {
+  async removeCandidate(sr_no, row_index, sheet, removed_by) {
     try {
-      const rowIndex = await sheetsAPI.findRowIndexByAliases(sheet, ['Sr.', 'Sr', 'Sr. No', 'Sr No'], String(sr_no));
-      if (rowIndex === -1) return { success: false, message: 'Candidate not found' };
-      await sheetsAPI.deleteRow(sheet, rowIndex);
+      const spreadsheetId = await this.getSpreadsheetIdForTab(sheet);
+      
+      let rowIndexToDelete = -1;
+      
+      if (row_index !== undefined && row_index !== null && row_index !== 'undefined') {
+        // row_index from frontend corresponds to the physical data row index (1-based from sheet headers).
+        rowIndexToDelete = parseInt(row_index);
+      } else {
+        // Fallback: search by Sr. No
+        rowIndexToDelete = await sheetsAPI.findRowIndexByAliases(sheet, ['Sr.', 'Sr', 'Sr. No', 'Sr No'], String(sr_no), spreadsheetId);
+      }
+
+      if (rowIndexToDelete === -1 || isNaN(rowIndexToDelete)) return { success: false, message: 'Candidate not found in sheet' };
+      
+      await sheetsAPI.deleteRow(sheet, rowIndexToDelete, spreadsheetId);
       cache.invalidateSheetData();
-      await this.logActivity({ action: 'Removed Candidate', user: removed_by || 'System', details: `Removed candidate Sr. No ${sr_no} from ${sheet}` });
+      await this.logActivity({ 
+        action: 'ROW_DELETED', 
+        actor: removed_by || 'System', 
+        details: `Removed candidate (Row: ${rowIndexToDelete}) from ${sheet}`,
+        target_tab_name: sheet
+      });
       return { success: true };
     } catch (err) {
       console.error('Remove Candidate Error:', err);
@@ -799,85 +1125,111 @@ class ProductionDatabase {
   }
 
   async changePassword(login_id, old_password, new_password) {
-    const rowIndex = await sheetsAPI.findRowIndex('Users', 'Login ID', login_id);
-    if (rowIndex === -1) return { success: false, message: 'User not found' };
-    const rows = await sheetsAPI.getSheetData('Users!A:I');
-    const userRow = rows[rowIndex];
-    const isMatch = userRow[2].startsWith('$2') ? await comparePassword(old_password, userRow[2]) : old_password === userRow[2];
-    if (!isMatch) return { success: false, message: 'Incorrect old password' };
-    const hashedPassword = await hashPassword(new_password);
-    userRow[2] = hashedPassword;
-    await sheetsAPI.updateRow('Users', rowIndex, userRow);
-    return { success: true };
+    try {
+      const user = await prisma.user.findUnique({ where: { login_id } });
+      if (!user) return { success: false, message: 'User not found' };
+
+      const isMatch = await comparePassword(old_password, user.password);
+      if (!isMatch) return { success: false, message: 'Incorrect old password' };
+
+      const hashedPassword = await hashPassword(new_password);
+      await prisma.user.update({
+        where: { login_id },
+        data: { password: hashedPassword }
+      });
+      
+      await this.logActivity({
+        action: 'PASSWORD_CHANGED',
+        actor: login_id,
+        details: `User changed their own password`
+      });
+      return { success: true };
+    } catch (err) {
+      console.error('Change Password Error:', err);
+      return { success: false, message: 'Update failed' };
+    }
   }
 
   async resetPassword(target_login_id, reset_by) {
     const tempPassword = Math.random().toString(36).slice(-8);
     const hashedPassword = await hashPassword(tempPassword);
-    const rowIndex = await sheetsAPI.findRowIndex('Users', 'Login ID', target_login_id);
-    if (rowIndex === -1) return { success: false, message: 'User not found' };
-    const rows = await sheetsAPI.getSheetData('Users!A:I');
-    const userRow = rows[rowIndex];
-    userRow[2] = hashedPassword;
-    await sheetsAPI.updateRow('Users', rowIndex, userRow);
+    await prisma.user.update({
+      where: { login_id: target_login_id },
+      data: { password: hashedPassword }
+    });
+    
+    await this.logActivity({
+      action: 'PASSWORD_RESET',
+      actor: reset_by,
+      details: `Password reset for ${target_login_id}`
+    });
     return { success: true, tempPassword };
   }
 
-  async removeUser(target_login_id, removed_by) {
-    const rowIndex = await sheetsAPI.findRowIndex('Users', 'Login ID', target_login_id);
-    if (rowIndex === -1) return { success: false, message: 'User not found' };
-    const rows = await sheetsAPI.getSheetData('Users!A:I');
-    const userRow = rows[rowIndex];
-    userRow[4] = 'inactive';
-    await sheetsAPI.updateRow('Users', rowIndex, userRow);
+  async updateUserRole(target_login_id, role, updated_by) {
+    const normalizedRole = this.normalizeRole(role);
+    await prisma.user.update({
+      where: { login_id: target_login_id },
+      data: { role: normalizedRole }
+    });
+    
+    await this.logActivity({ 
+      action: 'UPDATE_ROLE', 
+      actor: updated_by, 
+      details: `Updated role for ${target_login_id} to ${normalizedRole}` 
+    });
+    
     return { success: true };
   }
 
-  async updateUserRights(data) {
-    const rowIndex = await sheetsAPI.findRowIndex('Users', 'Login ID', data.target_login_id);
-    if (rowIndex === -1) return { success: false, message: 'User not found' };
-    const rows = await sheetsAPI.getSheetData('Users!A:K');
-    const userRow = rows[rowIndex];
-    userRow[3] = data.role || userRow[3];
-    userRow[6] = JSON.stringify(data.sheet_access || []);
-    await sheetsAPI.updateRow('Users', rowIndex, userRow);
-    cache.invalidateSheetData();
-    return { success: true };
+  async toggleUserStatus(target_login_id, updated_by) {
+    const user = await prisma.user.findUnique({ where: { login_id: target_login_id } });
+    if (!user) return { success: false, message: 'User not found' };
+    
+    const newStatus = user.status === 'active' ? 'inactive' : 'active';
+    await prisma.user.update({
+      where: { login_id: target_login_id },
+      data: { status: newStatus }
+    });
+    
+    await this.logActivity({ 
+      action: 'TOGGLE_STATUS', 
+      actor: updated_by, 
+      details: `Changed status for ${target_login_id} to ${newStatus}` 
+    });
+    
+    return { success: true, status: newStatus };
+  }
+
+  async syncAllSpreadsheets() {
+    return this.syncAllActiveSpreadsheets();
   }
 
   async updateUserLimit(target_login_id, max_users, updated_by) {
-    const rowIndex = await sheetsAPI.findRowIndex('Users', 'Login ID', target_login_id);
-    if (rowIndex === -1) return { success: false, message: 'User not found' };
-    const rows = await sheetsAPI.getSheetData('Users!A:K');
-    const userRow = rows[rowIndex];
-    userRow[9] = String(parseInt(max_users) || 10);
-    await sheetsAPI.updateRow('Users', rowIndex, userRow);
+    await prisma.user.update({
+      where: { login_id: target_login_id },
+      data: { max_user_quota: parseInt(max_users) || 10 }
+    });
+    
+    await this.logActivity({
+      action: 'UPDATE_QUOTA',
+      actor: updated_by,
+      details: `Updated max user quota for ${target_login_id} to ${max_users}`
+    });
     return { success: true };
   }
 
-  // ── Google Sheets Integration (Dynamic) ──
+  // ── Google Sheets Integration (Prisma-backed Registry) ──
   async getRegisteredSpreadsheets() {
     try {
-      await sheetsAPI.ensureSheetExists('google_sheets', [
-        'id', 'sheet_id', 'name', 'description', 'tab_name', 'columns', 
-        'last_synced_at', 'sync_interval_minutes', 'is_active', 'created_by', 'created_at',
-        'candidate_count', 'verified_count'
-      ]);
-      const rows = await sheetsAPI.getSheetData('google_sheets!A:M');
-      return sheetsAPI.rowsToObjects(rows).map(r => ({
-        id: r.id,
-        sheet_id: r.sheet_id,
-        name: r.name,
-        description: r.description,
-        tab_name: r.tab_name,
-        columns: r.columns ? JSON.parse(r.columns) : [],
-        last_synced_at: r.last_synced_at,
-        sync_interval_minutes: parseInt(r.sync_interval_minutes || 15),
-        is_active: r.is_active === 'true' || r.is_active === true,
-        created_by: r.created_by,
-        created_at: r.created_at,
-        candidate_count: parseInt(r.candidate_count || 0),
-        verified_count: parseInt(r.verified_count || 0)
+      const spreadsheets = await prisma.spreadsheet.findMany({
+        where: { is_active: true },
+        include: { tabs: true }
+      });
+      return spreadsheets.map(s => ({
+        ...s,
+        tab_name: s.tabs.length > 0 ? s.tabs[0].tab_name : 'No Tabs',
+        columns: s.tabs.length > 0 ? s.tabs[0].headers : []
       }));
     } catch (e) {
       console.error('getRegisteredSpreadsheets error:', e.message);
@@ -887,57 +1239,70 @@ class ProductionDatabase {
 
   async addSpreadsheet(sheet_id, added_by) {
     try {
-      // Fetch metadata from Google API
       const metadata = await sheetsAPI.getSpreadsheetMetadata(sheet_id);
       const title = metadata.properties.title;
-      const firstTab = metadata.sheets[0]?.properties?.title;
       
-      // Fetch headers of the first tab
-      const rows = await sheetsAPI.getSheetData(`${firstTab}!A1:Z1`, sheet_id);
-      const headers = rows && rows.length > 0 ? rows[0] : [];
-      const columns = headers.map((h, i) => ({ name: String(h).trim(), index: i, type: 'string' }));
+      const ss = await prisma.spreadsheet.upsert({
+        where: { sheet_id },
+        update: { name: title, is_active: true },
+        create: {
+          sheet_id,
+          name: title,
+          owner_id: added_by || 'system',
+          is_active: true
+        }
+      });
 
-      await sheetsAPI.ensureSheetExists('google_sheets', [
-        'id', 'sheet_id', 'name', 'description', 'tab_name', 'columns', 
-        'last_synced_at', 'sync_interval_minutes', 'is_active', 'created_by', 'created_at',
-        'candidate_count', 'verified_count'
-      ]);
+      const tabsData = [];
+      for (const sheet of metadata.sheets) {
+        const tabName = sheet.properties.title;
+        if (EXCLUDED_SHEETS.has(tabName.toLowerCase())) continue;
+        
+        let columns = [];
+        try {
+          const rows = await sheetsAPI.getSheetData(`'${tabName}'!A1:Z1`, sheet_id);
+          const headers = rows && rows.length > 0 ? rows[0] : [];
+          columns = headers.map((h, i) => ({ name: h ? String(h).trim() : `col_${i + 1}`, index: i, type: 'string' }));
+        } catch (err) {}
+
+        tabsData.push({
+          spreadsheet_id: ss.id,
+          tab_name: tabName,
+          headers: columns
+        });
+      }
       
-      const newId = uuidv4();
-      const row = [
-        newId,
-        sheet_id,
-        title,
-        '',
-        firstTab,
-        JSON.stringify(columns),
-        '',
-        '15',
-        'true',
-        added_by || 'System',
-        new Date().toISOString(),
-        '0', // candidate_count
-        '0'  // verified_count
-      ];
+      if (tabsData.length > 0) {
+        // Use individual creates to handle existing tabs via Upsert or skip
+        for (const tab of tabsData) {
+          await prisma.spreadsheetTab.upsert({
+            where: {
+              spreadsheet_id_tab_name: {
+                spreadsheet_id: tab.spreadsheet_id,
+                tab_name: tab.tab_name
+              }
+            },
+            update: { headers: tab.headers },
+            create: tab
+          });
+        }
+      }
       
-      await sheetsAPI.appendRow('google_sheets!A:M', row);
       cache.invalidateSheetData();
-      await this.logActivity({ action: 'Added Google Sheet', user: added_by, details: `Added sheet: ${title} (${sheet_id})` });
+      await this.logActivity({ action: 'REGISTER_SHEET', actor: added_by, details: `Registered spreadsheet: ${title} (${sheet_id})` });
       
-      return { success: true, title, tabs: metadata.sheets.map(s => s.properties.title), columns };
+      return { success: true, title, tabs: tabsData.map(t => t.tab_name), registered_count: tabsData.length };
     } catch (e) {
-      return { success: false, message: 'Could not add spreadsheet: ' + e.message };
+      return { success: false, message: 'Failed to register spreadsheet.' };
     }
   }
 
   async removeSpreadsheet(sheet_id, removed_by) {
     try {
-      const rowIndex = await sheetsAPI.findRowIndex('google_sheets', 'sheet_id', sheet_id);
-      if (rowIndex === -1) return { success: false, message: 'Spreadsheet not found in database' };
-      const rows = await sheetsAPI.getSheetData('google_sheets!A:M');
-      const row = rows[rowIndex];
-      row[8] = 'false'; // is_active
-      await sheetsAPI.updateRow('google_sheets', rowIndex, row);
+      await prisma.spreadsheet.update({
+        where: { sheet_id },
+        data: { is_active: false }
+      });
       cache.invalidateSheetData();
       return { success: true };
     } catch (e) {
@@ -946,92 +1311,102 @@ class ProductionDatabase {
   }
 
   async syncSpreadsheet(sheet_id) {
-    try {
-      const rowIndex = await sheetsAPI.findRowIndex('google_sheets', 'sheet_id', sheet_id);
-      if (rowIndex === -1) return { success: false, message: 'Spreadsheet not found in database' };
-      
-      const rows = await sheetsAPI.getSheetData('google_sheets!A:M');
-      const row = rows[rowIndex];
-      const tab_name = row[4];
-      
-      // Fetch fresh data from Google API - use quotes for tab names with spaces
-      const range = `'${tab_name}'!A:Z`;
-      const sheetData = await sheetsAPI.getSheetData(range, sheet_id);
-      if (!sheetData || !sheetData.length) {
-        return { success: true, message: 'No data to sync', rows: 0 };
-      }
-      
-      const headers = sheetData[0];
-      const dataRows = sheetData.slice(1);
-      
-      // Ensure sheet_data table exists
-      await sheetsAPI.ensureSheetExists('sheet_data', ['id', 'sheet_id', 'data_json']);
-      
-      // Get existing sheet_data to clear old entries for this sheet_id
-      // In a real DB we would do a DELETE FROM sheet_data WHERE sheet_id = ?. 
-      // In Google Sheets, this is expensive. We'll read all, filter out this sheet_id, append new, and overwrite.
-      // Since Google Sheets isn't a great DB for this, we will just clear and append if possible.
-      // A better approach for Google Sheets "table": just fetch all and rebuild the sheet.
-      const allCacheRows = await sheetsAPI.getSheetData('sheet_data!A:C');
-      const retainedRows = allCacheRows.filter((r, i) => i === 0 || r[1] !== sheet_id); // Keep headers and other sheets
-      
-      const newCacheRows = dataRows.map((dr, drIndex) => {
-        const rowObj = {};
-        headers.forEach((h, i) => { 
-          let normalizedH = String(h || `col_${i + 1}`)
-            .toLowerCase()
-            .trim()
-            .replace(/[^a-z0-9]+/g, '_')
-            .replace(/^_+|_+$/g, '') || `col_${i + 1}`;
-          
-          // Smart mapping for common HRMS aliases
-          if (normalizedH === 'sr' || normalizedH === 's_no' || normalizedH === 'serial') normalizedH = 'sr_no';
-          if (normalizedH === 'exp' || normalizedH === 'work_exp') normalizedH = 'experience';
-          if (normalizedH === 'mobile_no' || normalizedH === 'phone' || normalizedH === 'contact') normalizedH = 'mobile';
-          if (normalizedH === 'desc' || normalizedH === 'details') normalizedH = 'description';
-          if (normalizedH === 'modified_by' || normalizedH === 'added_by' || normalizedH === 'user') normalizedH = 'added_by';
-          if (normalizedH.startsWith('salary')) normalizedH = 'salary';
+    if (activeSyncs.has(sheet_id)) {
+      return activeSyncs.get(sheet_id);
+    }
+    const syncPromise = this._syncSpreadsheetInternal(sheet_id).finally(() => {
+      activeSyncs.delete(sheet_id);
+    });
+    activeSyncs.set(sheet_id, syncPromise);
+    return syncPromise;
+  }
 
-          rowObj[normalizedH] = dr[i] || ''; 
+  async _syncSpreadsheetInternal(sheet_id) {
+    try {
+      const ss = await prisma.spreadsheet.findUnique({
+        where: { sheet_id },
+        include: { tabs: true }
+      });
+      if (!ss) return { success: false, message: 'Spreadsheet not registered' };
+      const results = [];
+      let totalCandidateCount = 0;
+      let totalVerifiedCount = 0;
+
+      for (const tab of ss.tabs) {
+        const sheetData = await sheetsAPI.getSheetDataFull(tab.tab_name, sheet_id);
+        if (!sheetData || !sheetData.length) continue;
+        
+        const headers = sheetData[0];
+        const dataRows = sheetData.slice(1);
+      
+        // 2. Map new rows
+        const rowsToInsert = dataRows.map((dr, index) => {
+          const rowObj = {};
+          headers.forEach((h, i) => {
+            let normalizedH = String(h || `col_${i + 1}`).toLowerCase().trim().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || `col_${i + 1}`;
+            rowObj[normalizedH] = dr[i] || '';
+          });
+          
+          if (!rowObj.sr_no) rowObj.sr_no = index + 1;
+
+          return {
+            spreadsheet_id: ss.id,
+            tab_name: tab.tab_name,
+            row_index: index + 1,
+            data: rowObj,
+            search_vector: Object.values(rowObj).join(' ').toLowerCase()
+          };
         });
 
-        // Fallback for sr_no if missing or zero
-        if (!rowObj.sr_no || rowObj.sr_no === '0' || rowObj.sr_no === 0) {
-          rowObj.sr_no = drIndex + 1;
-        }
+        // Transaction to ensure atomicity and prevent partial reads
+        await prisma.$transaction(async (tx) => {
+          // 1. Delete old rows for this tab in Postgres
+          await tx.sheetRow.deleteMany({
+            where: { 
+              spreadsheet_id: ss.id,
+              tab_name: tab.tab_name
+            }
+          });
 
-        return [uuidv4(), sheet_id, JSON.stringify(rowObj)];
-      });
+          // 3. Insert new rows in chunks
+          if (rowsToInsert.length > 0) {
+            const CHUNK_SIZE = 5000; // Safe to increase chunk size for Postgres within transaction
+            for (let i = 0; i < rowsToInsert.length; i += CHUNK_SIZE) {
+              const chunk = rowsToInsert.slice(i, i + CHUNK_SIZE);
+              await tx.sheetRow.createMany({ data: chunk });
+            }
+          }
+        }, {
+          timeout: 120000 // 2 minutes timeout for large datasets
+        });
       
-      const combinedRows = [...retainedRows, ...newCacheRows];
-      
-      // We clear and update the sheet with the combined data
-      await sheetsAPI.updateFullSheet('sheet_data', combinedRows);
-      
-      // Update last_synced_at and persistent counts
-      row[6] = new Date().toISOString();
-      if (!row[5] || row[5] === '[]') {
-        row[5] = JSON.stringify(headers.map((h, i) => ({ name: String(h).trim(), index: i, type: 'string' })));
+        // 3. Update tab metadata
+        const totalCount = dataRows.length;
+        const verifiedCount = dataRows.filter(dr => {
+          const vIdx = this.resolveHeaderIndex(headers, ['Verification', 'Status']);
+          return vIdx >= 0 && String(dr[vIdx] || '').toLowerCase() === 'verified';
+        }).length;
+        
+        await prisma.spreadsheetTab.update({
+          where: { id: tab.id },
+          data: {
+            row_count: totalCount,
+            last_synced_at: new Date()
+          }
+        });
+
+        results.push({ tab: tab.tab_name, synced: totalCount });
       }
       
-      // Calculate counts for persistent storage
-      const totalCount = dataRows.length;
-      const verifiedCount = newCacheRows.filter(r => {
-        try {
-          const obj = JSON.parse(r[2]);
-          return String(obj.verification || '').toLowerCase() === 'verified';
-        } catch(e) { return false; }
-      }).length;
+      await prisma.spreadsheet.update({
+        where: { id: ss.id },
+        data: { 
+          last_synced_at: new Date()
+        }
+      });
 
-      // Ensure row has enough columns for indices 11 and 12
-      while(row.length < 13) row.push('');
-      row[11] = String(totalCount);
-      row[12] = String(verifiedCount);
-
-      await sheetsAPI.updateRow('google_sheets', rowIndex, row);
-      
       cache.invalidateSheetData();
-      return { success: true, rows_synced: dataRows.length };
+      return { success: true, results };
     } catch (e) {
       console.error('syncSpreadsheet error:', e);
       return { success: false, message: e.message };
@@ -1042,27 +1417,35 @@ class ProductionDatabase {
     const cacheKey = `raw-sheet-data:${sheet_id}`;
     return cache.getOrFetch(cacheKey, async () => {
       try {
-        await sheetsAPI.ensureSheetExists('sheet_data', ['id', 'sheet_id', 'data_json']);
-        
-        // Fetch only the relevant sheet_id if possible, otherwise fetch all and filter
-        // Optimization: Use a shared "Master Cache" for all sheets to avoid 100 calls
-        const masterCacheKey = 'master-sheet-data';
-        const allRows = await cache.getOrFetch(masterCacheKey, async () => {
-          return await sheetsAPI.getSheetData('sheet_data!A:C');
-        }, 30 * 1000); // 30 second master cache
-
-        if (!allRows || !allRows.length) return [];
-        const filtered = allRows.filter((r, i) => i !== 0 && r[1] === sheet_id);
-        return filtered.map(r => {
-          try {
-            return JSON.parse(r[2]);
-          } catch (e) { return {}; }
+        const ss = await prisma.spreadsheet.findUnique({
+          where: { sheet_id },
+          include: { tabs: true }
         });
+        if (!ss) return [];
+
+        const rows = await prisma.sheetRow.findMany({
+          where: { spreadsheet_id: ss.id },
+          orderBy: { id: 'asc' }
+        });
+
+        if (rows.length === 0) {
+          const syncRes = await this.syncSpreadsheet(sheet_id);
+          if (syncRes.success) {
+            const syncedRows = await prisma.sheetRow.findMany({
+              where: { spreadsheet_id: ss.id },
+              orderBy: { id: 'asc' }
+            });
+            return syncedRows.map(r => r.data);
+          }
+          return [];
+        }
+
+        return rows.map(r => r.data);
       } catch (e) {
         console.error('getSheetDataForSpreadsheet error:', e);
         return [];
       }
-    }, 10 * 1000); // 10 second per-sheet cache
+    }, 10 * 1000);
   }
 
   // Cron-like function to sync all active spreadsheets
@@ -1074,7 +1457,8 @@ class ProductionDatabase {
           const lastSynced = sheet.last_synced_at ? new Date(sheet.last_synced_at) : new Date(0);
           const now = new Date();
           const minutesSinceSync = (now - lastSynced) / 1000 / 60;
-          if (minutesSinceSync >= sheet.sync_interval_minutes) {
+          const syncInterval = sheet.sync_interval_minutes ?? 60;
+          if (minutesSinceSync >= syncInterval) {
             console.log(`Auto-syncing spreadsheet: ${sheet.name} (${sheet.sheet_id})`);
             await this.syncSpreadsheet(sheet.sheet_id);
           }
@@ -1094,7 +1478,7 @@ class ProductionDatabase {
       const defaultHeaders = ['Sr.', 'Name', 'Mobile No', 'Address', 'State', 'Area', 'experience', 'Education', 'DOB', 'Age', 'Gender', 'Salary', 'Verification', 'Description', 'Since', 'Added By', 'Last Updated'];
       await sheetsAPI.ensureSheetExists(sheet, defaultHeaders);
 
-      const rows = await sheetsAPI.getSheetData(`${sheet}!A:Z`);
+      const rows = await sheetsAPI.getSheetDataFull(sheet);
       if (!rows.length) return { success: false, message: 'Target sheet not found' };
       const headers = rows[0];
 
@@ -1172,7 +1556,7 @@ class ProductionDatabase {
 
       // Batch write all records at once to avoid quota errors
       if (rowsToImport.length > 0) {
-        await sheetsAPI.appendRows(`${sheet}!A:Z`, rowsToImport);
+        await sheetsAPI.appendRows(`${sheet}!A:ZZ`, rowsToImport);
       }
 
       cache.invalidateSheetData();
@@ -1180,7 +1564,7 @@ class ProductionDatabase {
       return { success: true, imported, skipped, errors: errors.slice(0, 10) };
     } catch (e) {
       console.error('Smart import error:', e);
-      return { success: false, message: 'Smart import failed: ' + e.message };
+      return { success: false, message: 'Import failed due to a system error.' };
     }
   }
 
@@ -1297,7 +1681,7 @@ class ProductionDatabase {
       await sheetsAPI.ensureSheetExists(sheetName, defaultHeaders);
 
       // Fetch headers
-      const rows = await sheetsAPI.getSheetData(`${sheetName}!A:Z`);
+      const rows = await sheetsAPI.getSheetDataFull(sheetName);
       if (!rows.length) throw new Error("Target sheet not found or empty");
       const headers = rows[0];
       
@@ -1326,7 +1710,7 @@ class ProductionDatabase {
         const rowsToAppend = [];
         
         // Refetch current max Sr No for each batch to minimize conflicts
-        const currentData = await sheetsAPI.getSheetData(`${sheetName}!A:Z`);
+        const currentData = await sheetsAPI.getSheetDataFull(sheetName);
         const srIdx = this.resolveHeaderIndex(headers, ['Sr.', 'Sr', 'Sr No', 'Sr. No']);
         let lastSr = currentData.length > 1 && srIdx >= 0 ? parseInt(currentData[currentData.length - 1][srIdx]) || 0 : 0;
 
@@ -1353,7 +1737,7 @@ class ProductionDatabase {
           imported++;
         }
         
-        await sheetsAPI.appendRows(`${sheetName}!A:Z`, rowsToAppend);
+        await sheetsAPI.appendRows(`${sheetName}!A:ZZ`, rowsToAppend);
       }
 
       cache.invalidateSheetData();
@@ -1439,32 +1823,43 @@ class ProductionDatabase {
   // Helper to auto-register primary sheets if they aren't registered
   async autoRegisterPrimarySheets() {
     try {
-      const registered = await this.getRegisteredSpreadsheets();
-      const primarySheets = await sheetsAPI.getSheetNames();
       const spreadsheetId = process.env.SPREADSHEET_ID;
+      if (!spreadsheetId) return;
 
-      for (const name of primarySheets) {
+      const sheetNames = await sheetsAPI.getSheetNames(spreadsheetId);
+      
+      // 1. Ensure Spreadsheet record exists
+      let ss = await prisma.spreadsheet.findUnique({
+        where: { sheet_id: spreadsheetId },
+        include: { tabs: true }
+      });
+
+      if (!ss) {
+        console.log(`Creating primary spreadsheet record: ${spreadsheetId}`);
+        const title = await sheetsAPI.getSpreadsheetTitle(spreadsheetId);
+        ss = await prisma.spreadsheet.create({
+          data: {
+            sheet_id: spreadsheetId,
+            name: title,
+            owner_id: 'system'
+          },
+          include: { tabs: true }
+        });
+      }
+
+      // 2. Register missing tabs
+      for (const name of sheetNames) {
         if (EXCLUDED_SHEETS.has(name.toLowerCase())) continue;
-        if (!registered.find(r => r.name === name && r.sheet_id === spreadsheetId)) {
-          console.log(`Auto-registering primary sheet: ${name}`);
-          // Add dummy entry for primary sheets
-          const newId = uuidv4();
-          const row = [
-            newId,
-            spreadsheetId,
-            name,
-            'Auto-registered primary sheet',
-            name,
-            '[]',
-            '',
-            '15',
-            'true',
-            'System',
-            new Date().toISOString(),
-            '0', // candidate_count
-            '0'  // verified_count
-          ];
-          await sheetsAPI.appendRow('google_sheets!A:M', row);
+        
+        const tabExists = ss.tabs.find(t => t.tab_name === name);
+        if (!tabExists) {
+          console.log(`Auto-registering primary sheet tab: ${name}`);
+          await prisma.spreadsheetTab.create({
+            data: {
+              spreadsheet_id: ss.id,
+              tab_name: name
+            }
+          });
         }
       }
     } catch (e) {
@@ -1472,22 +1867,6 @@ class ProductionDatabase {
     }
   }
 
-  async syncAllActiveSpreadsheets() {
-    try {
-      const spreadsheets = await this.getRegisteredSpreadsheets();
-      const active = spreadsheets.filter(s => s.is_active);
-      const results = [];
-      for (const ss of active) {
-        results.push(await this.syncSpreadsheet(ss.sheet_id));
-        // Small delay to avoid Google rate limits
-        await new Promise(r => setTimeout(r, 250));
-      }
-      return { success: true, results };
-    } catch (e) {
-      console.error('syncAllActiveSpreadsheets error:', e);
-      return { success: false, message: e.message };
-    }
-  }
 
   calculateAge(dob) {
     if (!dob) return 0;

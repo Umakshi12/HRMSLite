@@ -7,6 +7,8 @@ dotenv.config();
 const SECRET = process.env.JWT_SECRET;
 if (!SECRET) {
   throw new Error('JWT_SECRET is required in backend .env');
+} else {
+  console.log(`[Auth] JWT_SECRET loaded (length: ${SECRET.length})`);
 }
 
 export const hashPassword = async (password) => {
@@ -24,6 +26,7 @@ export const generateToken = (user) => {
       login_id: user.login_id, 
       identifier: user.identifier, 
       role: user.role,
+      tenant_id: user.tenant_id,
       sheet_access: user.sheet_access 
     },
     SECRET,
@@ -35,6 +38,7 @@ export const verifyToken = (token) => {
   try {
     return jwt.verify(token, SECRET);
   } catch (err) {
+    console.error(`[Auth] Token verification failed: ${err.message}`);
     return null;
   }
 };
