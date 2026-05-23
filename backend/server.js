@@ -12,6 +12,7 @@ import prisma from './prisma/client.js';
 dotenv.config();
 
 const app = express();
+app.set('trust proxy', 1);
 
 // COOKIE PARSER (since we removed the dependency to stay lean)
 app.use((req, res, next) => {

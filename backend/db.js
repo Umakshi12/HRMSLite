@@ -596,7 +596,7 @@ class ProductionDatabase {
 
   async getSheetSummary(user) {
     const nr = this.normalizeRole(user?.role);
-    const cacheKey = (nr === 'admin' || nr === 'super_admin') ? 'sheet-summary-admin' : `sheet-summary-${user?.login_id || 'anon'}`;
+    const cacheKey = nr === 'super_admin' ? 'sheet-summary-super-admin' : `sheet-summary-${user?.login_id || 'anon'}`;
     
     return cache.getOrFetch(cacheKey, async () => {
       // 1. Get registry of all spreadsheets (Already cached metadata)
@@ -604,8 +604,14 @@ class ProductionDatabase {
       
       // 2. Filter by user access
       let visibleSheets = [];
-      if (nr === 'super_admin' || nr === 'admin') {
+      if (nr === 'super_admin') {
         visibleSheets = allRegistered.filter(s => s.is_active);
+      } else if (nr === 'admin') {
+        const grants = await prisma.userTabAccess.findMany({
+          where: { user_id: user.login_id }
+        });
+        const grantedSpreadsheetIds = grants.map(g => g.spreadsheet_id);
+        visibleSheets = allRegistered.filter(s => s.is_active && grantedSpreadsheetIds.includes(s.id));
       } else if (user) {
         const grants = await this.getUserGrants(user.login_id);
         const grantedIds = grants.map(g => g.sheet_id);

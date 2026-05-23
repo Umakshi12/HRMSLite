@@ -24,14 +24,7 @@ export default function App() {
         setInitializing(false)
       }
     }
-    
-    // Check if we have a persisted user hint to avoid unnecessary calls (optional optimization)
-    const userHint = sessionStorage.getItem('sheetsync_user')
-    if (userHint) {
-      restoreSession()
-    } else {
-      setInitializing(false)
-    }
+    restoreSession()
   }, [setAuth, clearAuth])
 
   if (initializing) {

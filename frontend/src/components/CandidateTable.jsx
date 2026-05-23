@@ -3,6 +3,7 @@ import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { useReactTable, getCoreRowModel, getSortedRowModel, flexRender } from '@tanstack/react-table'
 import useStore from '../lib/store'
 import { applyFilters, removeCandidate, getFilterOptions, getSpreadsheets, syncSpreadsheet } from '../lib/api'
+import { API_BASE } from '../lib/config'
 import { Pencil, ArrowUpDown, ChevronLeft, ChevronRight, RefreshCw, Trash2, Filter, X, Eye, FileUp, Phone, MessageCircle, Download } from 'lucide-react'
 import { toast } from 'sonner'
 import CSVImportWizard from './CSVImportWizard'
@@ -232,7 +233,7 @@ export default function CandidateTable({ onEdit }) {
   const handleExport = async () => {
     try {
       const targetSheet = searchAllSheets ? 'all' : activeSheet
-      const url = `${import.meta.env.VITE_API_URL || 'http://localhost:5000/api'}/export-sheet?sheet=${targetSheet}&all=${searchAllSheets}`
+      const url = `${API_BASE}/export-sheet?sheet=${targetSheet}&all=${searchAllSheets}`
       
       const response = await fetch(url, {
         headers: {

@@ -189,7 +189,16 @@ router.post('/change-password', requireAuth, asyncHandler(async (req, res) => {
 
 // ── Data ──
 router.get('/get-sheet-summary', requireAuth, asyncHandler(async (req, res) => {
-  res.json(await db.getSheetSummary(req.user));
+  const summary = await db.getSheetSummary(req.user);
+  res.json({ success: true, ...summary });
+}));
+
+router.get('/debug-grants', asyncHandler(async (req, res) => {
+  const { PrismaClient } = require('@prisma/client');
+  const prisma = new PrismaClient();
+  const users = await prisma.user.findMany({ select: { login_id: true, identifier: true, role: true, sheet_access: true } });
+  const grants = await prisma.userTabAccess.findMany();
+  res.json({ users, grants });
 }));
 
 router.get('/get-sheet-data', requireAuth, enforceSheetAccess, asyncHandler(async (req, res) => {
@@ -605,7 +614,7 @@ router.post('/reset-password', requireAuth, isAdminOrSuper, asyncHandler(async (
 
 router.put('/update-user-rights', requireAuth, isAdminOrSuper, asyncHandler(async (req, res) => {
   const callerRole = normalizeRole(req.user.role);
-  const targetRole = normalizeRole(req.body.role || 'user');
+  const targetRole = req.body.role ? normalizeRole(req.body.role) : undefined;
   const { target_login_id, name, phone, identifier, sheet_access } = req.body;
 
   if (!target_login_id) {
@@ -867,10 +876,10 @@ router.post('/grant-tab-access', requireAuth, isAdminOrSuper, asyncHandler(async
 
     const grant = await prisma.userTabAccess.upsert({
       where: {
-        user_id_tab_id: { user_id: user.id, tab_id: tab.id },
+        user_id_spreadsheet_id_tab_name: { user_id: user.login_id, spreadsheet_id, tab_name },
       },
-      update:  { can_edit, granted_by: req.user?.login_id },
-      create:  { user_id: user.id, tab_id: tab.id, can_edit, granted_by: req.user?.login_id },
+      update:  { granted_by: req.user?.login_id },
+      create:  { user_id: user.login_id, spreadsheet_id, tab_name, granted_by: req.user?.login_id },
     });
     res.json({ success: true, grant });
   } catch (e) {
@@ -895,7 +904,7 @@ router.delete('/revoke-tab-access', requireAuth, isAdminOrSuper, asyncHandler(as
     if (!tab) return res.status(404).json({ success: false, message: 'Tab not found' });
 
     await prisma.userTabAccess.deleteMany({
-      where: { user_id: user.id, tab_id: tab.id },
+      where: { user_id: user.login_id, spreadsheet_id, tab_name },
     });
     res.json({ success: true, message: `Access to '${tab_name}' revoked for ${target_login_id}` });
   } catch (e) {
