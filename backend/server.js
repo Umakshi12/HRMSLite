@@ -70,7 +70,8 @@ app.use(hpp());
 // Global Rate Limiter
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100,
+  max: 500,
+  skip: (req) => req.path === '/health' || req.path === '/',
   message: { success: false, message: 'Too many requests, please try again later.' },
   standardHeaders: true,
   legacyHeaders: false,
@@ -103,11 +104,13 @@ const aiLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-app.use('/api', globalLimiter);
-app.use('/api/login', loginLimiter);
-app.use('/api/import', importLimiter);
-app.use('/api/ai-search', aiLimiter);
-app.use('/api/bulk-import', importLimiter);
+// SECURITY: Routes are mounted at both /api and / (Vercel prefix stripping),
+// so limiters must cover both path variants or they can be bypassed.
+app.use(globalLimiter);
+app.use(['/api/login', '/login'], loginLimiter);
+app.use(['/api/import', '/import'], importLimiter);
+app.use(['/api/ai-search', '/ai-search'], aiLimiter);
+app.use(['/api/bulk-import', '/bulk-import'], importLimiter);
 
 // Fixed CORS (Restricted for production)
 const corsOptions = {
@@ -182,6 +185,11 @@ if (process.env.NODE_ENV !== 'production' || process.env.VERCEL !== '1') {
       console.log('[Background] Running scheduled spreadsheet sync...');
       await db.syncAllActiveSpreadsheets();
     }, SYNC_INTERVAL);
+
+    // DATA POLICY: daily purge of cached rows from disconnected spreadsheets
+    const PURGE_INTERVAL = 24 * 60 * 60 * 1000;
+    await db.purgeStaleSheetRows();
+    setInterval(() => db.purgeStaleSheetRows(), PURGE_INTERVAL);
   });
 }
 

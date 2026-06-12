@@ -153,6 +153,95 @@ class ProductionDatabase {
     return reg ? reg.sheet_id : undefined;
   }
 
+  // ── Postgres cache helpers (shared by sync + write-through) ──
+
+  _normalizeHeaderKey(h, i) {
+    return String(h || `col_${i + 1}`).toLowerCase().trim().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || `col_${i + 1}`;
+  }
+
+  /** Build a SheetRow.data object from a raw sheet row array, matching sync normalization exactly */
+  _buildRowData(headers, rowArray, dataIndex) {
+    const rowObj = {};
+    headers.forEach((h, i) => {
+      rowObj[this._normalizeHeaderKey(h, i)] = rowArray[i] !== undefined && rowArray[i] !== null ? rowArray[i] : '';
+    });
+    if (!rowObj.sr_no) rowObj.sr_no = dataIndex + 1;
+    return rowObj;
+  }
+
+  /** Resolve app-level sheet names to registered spreadsheets (Postgres-cached) */
+  async _resolveRegisteredSpreadsheets(sheetNames) {
+    const regs = await this.getRegisteredSpreadsheets();
+    const matched = [];
+    const unmatched = [];
+    for (const name of sheetNames) {
+      const reg = regs.find(ss => ss.name === name || ss.tab_name === name);
+      if (reg) matched.push({ id: reg.id, sheet_id: reg.sheet_id, name });
+      else unmatched.push(name);
+    }
+    return { matched, unmatched };
+  }
+
+  /** Sync any registered spreadsheet whose Postgres cache is empty (first access) */
+  async _ensureSynced(matched) {
+    await Promise.all(matched.map(async (m) => {
+      const count = await prisma.sheetRow.count({ where: { spreadsheet_id: m.id } });
+      if (count === 0) await this.syncSpreadsheet(m.sheet_id);
+    }));
+  }
+
+  /**
+   * Write-through: after a successful write to Google Sheets, mirror the change
+   * into the Postgres cache so users see it instantly. Falls back to a
+   * background full re-sync if the row can't be targeted precisely.
+   */
+  async _writeThroughUpsert(googleSheetId, tabName, headers, rowArray, rowIndex, actor) {
+    try {
+      if (!googleSheetId) return; // unregistered/primary sheet — legacy path serves it
+      const ss = await prisma.spreadsheet.findUnique({ where: { sheet_id: googleSheetId } });
+      if (!ss) return;
+      const tab = await prisma.spreadsheetTab.findFirst({
+        where: { spreadsheet_id: ss.id, tab_name: tabName },
+      });
+      if (!tab) {
+        this.syncSpreadsheet(googleSheetId).catch(() => {});
+        return;
+      }
+      const data = this._buildRowData(headers, rowArray, rowIndex - 1);
+      await prisma.sheetRow.upsert({
+        where: { spreadsheet_id_tab_name_row_index: { spreadsheet_id: ss.id, tab_name: tabName, row_index: rowIndex } },
+        update: { data, search_vector: Object.values(data).join(' ').toLowerCase(), modified_by: actor || null },
+        create: {
+          spreadsheet_id: ss.id, tab_name: tabName, row_index: rowIndex,
+          data, search_vector: Object.values(data).join(' ').toLowerCase(),
+          created_by: actor || null,
+        },
+      });
+    } catch (e) {
+      console.warn('[WriteThrough] Upsert failed, scheduling background sync:', e.message);
+      if (googleSheetId) this.syncSpreadsheet(googleSheetId).catch(() => {});
+    }
+  }
+
+  async _writeThroughDelete(googleSheetId, tabName, rowIndex) {
+    try {
+      if (!googleSheetId) return;
+      const ss = await prisma.spreadsheet.findUnique({ where: { sheet_id: googleSheetId } });
+      if (!ss) return;
+      await prisma.$transaction([
+        prisma.sheetRow.deleteMany({ where: { spreadsheet_id: ss.id, tab_name: tabName, row_index: rowIndex } }),
+        // Subsequent rows shift up by one in the Google Sheet — mirror that
+        prisma.sheetRow.updateMany({
+          where: { spreadsheet_id: ss.id, tab_name: tabName, row_index: { gt: rowIndex } },
+          data: { row_index: { decrement: 1 } },
+        }),
+      ]);
+    } catch (e) {
+      console.warn('[WriteThrough] Delete failed, scheduling background sync:', e.message);
+      if (googleSheetId) this.syncSpreadsheet(googleSheetId).catch(() => {});
+    }
+  }
+
   /** Cached sheet data fetch — returns raw dynamic objects keyed by actual header names */
   async getCachedSheetData(sheetName) {
     const cacheKey = `sheet:${sheetName}`;
@@ -584,6 +673,34 @@ class ProductionDatabase {
   // ── Candidates (CACHED) ──
   async getSheetData(sheet, page = 1, limit = 50, user) {
     try {
+      const sheetNames = await this.resolveTargetSheets(sheet, user);
+      if (!sheetNames.length) return { total: 0, page, data: [] };
+
+      const { matched, unmatched } = await this._resolveRegisteredSpreadsheets(sheetNames);
+
+      // FAST PATH: every requested sheet lives in the Postgres cache →
+      // paginate in SQL instead of loading all rows into memory.
+      if (unmatched.length === 0 && matched.length > 0) {
+        await this._ensureSynced(matched);
+        const ids = matched.map(m => m.id);
+        const nameById = Object.fromEntries(matched.map(m => [m.id, m.name]));
+        const where = { spreadsheet_id: { in: ids } };
+        const [total, rows] = await Promise.all([
+          prisma.sheetRow.count({ where }),
+          prisma.sheetRow.findMany({
+            where,
+            orderBy: [{ spreadsheet_id: 'asc' }, { tab_name: 'asc' }, { row_index: 'asc' }],
+            skip: (page - 1) * limit,
+            take: limit,
+          }),
+        ]);
+        return {
+          total, page,
+          data: rows.map(r => ({ ...r.data, _sheet: nameById[r.spreadsheet_id], _row_index: r.row_index })),
+        };
+      }
+
+      // LEGACY PATH: unregistered sheets (auto-discovery) — in-memory pagination
       const allData = await this.getAllCandidateData(sheet, user);
       const total = allData.length;
       const start = (page - 1) * limit;
@@ -684,6 +801,8 @@ class ProductionDatabase {
 
       await sheetsAPI.appendRow(`${sheet}!A:ZZ`, row, spreadsheetId);
       cache.invalidateSheetData();
+      // Write-through: mirror the new row into the Postgres cache instantly
+      await this._writeThroughUpsert(spreadsheetId, sheet, headers, row, rows.length, added_by);
 
       await this.logActivity({
         action: 'ROW_CREATED',
@@ -923,8 +1042,55 @@ class ProductionDatabase {
   }
 
   // ── Filters — AND logic: every active condition must match ──
+  /** Tokenize a search query the same way smartSearch does (stop-words removed) */
+  _searchTokens(query) {
+    if (!query || !query.trim()) return [];
+    const STOP_WORDS = new Set(['in', 'on', 'at', 'for', 'with', 'and', 'to', 'a', 'the', 'of', 'is', 'are', 'from']);
+    return query.toLowerCase().replace(/,/g, ' ').replace(/[^\w\s-]/g, ' ').trim()
+      .split(/\s+/).filter(t => t && !STOP_WORDS.has(t));
+  }
+
   async applyFilters(sheet, filters, page = 1, limit = 50, user) {
     try {
+      // FAST PATH: pure text search (no column/salary filters) on Postgres-cached
+      // sheets → filter and paginate in SQL via search_vector.
+      const hasColumnFilters = filters.columns && typeof filters.columns === 'object'
+        && Object.values(filters.columns).some(v => v && v.length);
+      const hasLegacyFilters = Object.entries(filters).some(([k, v]) =>
+        !['search', 'salary_min', 'salary_max', 'columns'].includes(k) && Array.isArray(v) && v.length);
+      const hasSalaryFilters = !!(filters.salary_min || filters.salary_max);
+
+      if (!hasColumnFilters && !hasLegacyFilters && !hasSalaryFilters) {
+        const sheetNames = await this.resolveTargetSheets(sheet, user);
+        if (!sheetNames.length) return { total: 0, page, data: [] };
+        const { matched, unmatched } = await this._resolveRegisteredSpreadsheets(sheetNames);
+
+        if (unmatched.length === 0 && matched.length > 0) {
+          await this._ensureSynced(matched);
+          const ids = matched.map(m => m.id);
+          const nameById = Object.fromEntries(matched.map(m => [m.id, m.name]));
+          const tokens = this._searchTokens(filters.search);
+          const where = {
+            spreadsheet_id: { in: ids },
+            ...(tokens.length ? { AND: tokens.map(t => ({ search_vector: { contains: t } })) } : {}),
+          };
+          const [total, rows] = await Promise.all([
+            prisma.sheetRow.count({ where }),
+            prisma.sheetRow.findMany({
+              where,
+              orderBy: [{ spreadsheet_id: 'asc' }, { tab_name: 'asc' }, { row_index: 'asc' }],
+              skip: (page - 1) * limit,
+              take: limit,
+            }),
+          ]);
+          return {
+            total, page,
+            data: rows.map(r => ({ ...r.data, _sheet: nameById[r.spreadsheet_id], _row_index: r.row_index })),
+          };
+        }
+      }
+
+      // LEGACY PATH: column/salary filters or unregistered sheets — in-memory
       let allData = await this.getAllCandidateData(sheet, user);
 
       // Smart text search (must match all tokens)
@@ -1067,8 +1233,13 @@ class ProductionDatabase {
         const targetSpreadsheetId = await this.getSpreadsheetIdForTab(target_sheet) || spreadsheetId;
         await sheetsAPI.appendRow(`${target_sheet}!A:ZZ`, existingRow, targetSpreadsheetId);
         await sheetsAPI.deleteRow(sheet, rowIndex, spreadsheetId);
+        // Cross-sheet move touches two sheets — re-sync both in the background
+        await this._writeThroughDelete(spreadsheetId, sheet, rowIndex);
+        if (targetSpreadsheetId) this.syncSpreadsheet(targetSpreadsheetId).catch(() => {});
       } else {
         await sheetsAPI.updateRow(sheet, rowIndex, existingRow, spreadsheetId);
+        // Write-through: mirror the edit into the Postgres cache instantly
+        await this._writeThroughUpsert(spreadsheetId, sheet, originalHeaders, existingRow, rowIndex, updated_by);
       }
 
       cache.invalidateSheetData();
@@ -1110,6 +1281,8 @@ class ProductionDatabase {
       
       await sheetsAPI.deleteRow(sheet, rowIndexToDelete, spreadsheetId);
       cache.invalidateSheetData();
+      // Write-through: remove the row from the Postgres cache instantly
+      await this._writeThroughDelete(spreadsheetId, sheet, rowIndexToDelete);
       await this.logActivity({ 
         action: 'ROW_DELETED', 
         actor: removed_by || 'System', 
@@ -1305,14 +1478,44 @@ class ProductionDatabase {
 
   async removeSpreadsheet(sheet_id, removed_by) {
     try {
-      await prisma.spreadsheet.update({
+      const ss = await prisma.spreadsheet.update({
         where: { sheet_id },
         data: { is_active: false }
       });
+      // DATA POLICY: purge all cached rows immediately — Google Sheets stays
+      // the only permanent home of the data once a sheet is disconnected.
+      const purged = await prisma.sheetRow.deleteMany({ where: { spreadsheet_id: ss.id } });
       cache.invalidateSheetData();
+      await this.logActivity({
+        action: 'UNREGISTER_SHEET',
+        actor: removed_by,
+        details: `Removed spreadsheet ${sheet_id}; purged ${purged.count} cached rows`,
+      });
       return { success: true };
     } catch (e) {
       return { success: false, message: e.message };
+    }
+  }
+
+  /**
+   * DATA POLICY: safety-net purge — deletes any cached rows still belonging to
+   * inactive (disconnected) spreadsheets. Run daily from server.js.
+   */
+  async purgeStaleSheetRows() {
+    try {
+      const inactive = await prisma.spreadsheet.findMany({
+        where: { is_active: false },
+        select: { id: true },
+      });
+      if (!inactive.length) return { purged: 0 };
+      const res = await prisma.sheetRow.deleteMany({
+        where: { spreadsheet_id: { in: inactive.map(s => s.id) } },
+      });
+      if (res.count) console.log(`[Purge] Removed ${res.count} cached rows from inactive spreadsheets`);
+      return { purged: res.count };
+    } catch (e) {
+      console.error('purgeStaleSheetRows error:', e);
+      return { purged: 0 };
     }
   }
 
@@ -1347,13 +1550,7 @@ class ProductionDatabase {
       
         // 2. Map new rows
         const rowsToInsert = dataRows.map((dr, index) => {
-          const rowObj = {};
-          headers.forEach((h, i) => {
-            let normalizedH = String(h || `col_${i + 1}`).toLowerCase().trim().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || `col_${i + 1}`;
-            rowObj[normalizedH] = dr[i] || '';
-          });
-          
-          if (!rowObj.sr_no) rowObj.sr_no = index + 1;
+          const rowObj = this._buildRowData(headers, dr, index);
 
           return {
             spreadsheet_id: ss.id,
@@ -1563,6 +1760,9 @@ class ProductionDatabase {
       // Batch write all records at once to avoid quota errors
       if (rowsToImport.length > 0) {
         await sheetsAPI.appendRows(`${sheet}!A:ZZ`, rowsToImport);
+        // Refresh the Postgres cache for this spreadsheet in the background
+        const gsId = await this.getSpreadsheetIdForTab(sheet);
+        if (gsId) this.syncSpreadsheet(gsId).catch(() => {});
       }
 
       cache.invalidateSheetData();
@@ -1744,6 +1944,12 @@ class ProductionDatabase {
         }
         
         await sheetsAPI.appendRows(`${sheetName}!A:ZZ`, rowsToAppend);
+      }
+
+      // Refresh the Postgres cache for this spreadsheet in the background
+      if (imported > 0) {
+        const gsId = await this.getSpreadsheetIdForTab(sheetName);
+        if (gsId) this.syncSpreadsheet(gsId).catch(() => {});
       }
 
       cache.invalidateSheetData();

@@ -4,7 +4,7 @@ import db from './db.js';
 import cache from './cache.js';
 import prisma from './prisma/client.js';
 import { verifyToken, generateToken } from './auth.js';
-import { validateRequest, loginSchema, addCandidateSchema } from './validation.js';
+import { validateRequest, loginSchema, addCandidateSchema, editCandidateSchema } from './validation.js';
 import multer from 'multer';
 import { parse } from 'csv-parse/sync';
 
@@ -193,14 +193,6 @@ router.get('/get-sheet-summary', requireAuth, asyncHandler(async (req, res) => {
   res.json({ success: true, ...summary });
 }));
 
-router.get('/debug-grants', asyncHandler(async (req, res) => {
-  const { PrismaClient } = require('@prisma/client');
-  const prisma = new PrismaClient();
-  const users = await prisma.user.findMany({ select: { login_id: true, identifier: true, role: true, sheet_access: true } });
-  const grants = await prisma.userTabAccess.findMany();
-  res.json({ users, grants });
-}));
-
 router.get('/get-sheet-data', requireAuth, enforceSheetAccess, asyncHandler(async (req, res) => {
   const { sheet, all, page, limit } = req.query;
   const resolvedSheet = all === 'true' ? 'all' : sheet;
@@ -235,7 +227,9 @@ router.get('/export-sheet', requireAuth, enforceSheetAccess, asyncHandler(async 
 
   for (const row of allData) {
     const values = headers.map(header => {
-      const val = row[header] ? String(row[header]) : '';
+      let val = row[header] ? String(row[header]) : '';
+      // SECURITY: Prevent CSV formula injection — neutralize leading =, +, -, @, tab, CR
+      if (/^[=+\-@\t\r]/.test(val)) val = `'${val}`;
       return `"${val.replace(/"/g, '""')}"`;
     });
     csvRows.push(values.join(','));
@@ -278,7 +272,7 @@ router.post('/add-candidate', requireAuth, enforceSheetAccess, validateRequest(a
   res.status(result.success ? 200 : 400).json(result);
 }));
 
-router.put('/edit-candidate', requireAuth, enforceSheetAccess, asyncHandler(async (req, res) => {
+router.put('/edit-candidate', requireAuth, enforceSheetAccess, validateRequest(editCandidateSchema), asyncHandler(async (req, res) => {
   const { sr_no, row_index, sheet, target_sheet, updated_fields } = req.body;
   const sourceSheet = sheet || target_sheet;
   if (!sourceSheet) return res.status(400).json({ success: false, message: 'Sheet name is required' });
@@ -700,6 +694,9 @@ router.post('/send-credentials', requireAuth, isAdminOrSuper, asyncHandler(async
   if (!reset.success) return res.status(500).json({ success: false, message: 'Action failed' });
 
   if (channel === 'sms' && process.env.TWILIO_ACCOUNT_SID) {
+    if (!targetUser.phone) {
+      return res.status(400).json({ success: false, message: 'User has no phone number on record. Use email instead.' });
+    }
     try {
       const twilio = (await import('twilio')).default;
       const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);

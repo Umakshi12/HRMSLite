@@ -24,6 +24,14 @@ export const addCandidateSchema = z.object({
   added_by:  z.string().max(100).optional(),
 });
 
+export const editCandidateSchema = z.object({
+  sr_no:          z.union([z.string().max(20), z.number()]).optional(),
+  row_index:      z.union([z.string().max(20), z.number()]).optional(),
+  sheet:          z.string().min(1).max(100).optional(),
+  target_sheet:   z.string().min(1).max(100).optional(),
+  updated_fields: candidateSchema.optional(),
+}).refine(d => d.sheet || d.target_sheet, { message: 'Sheet name is required' });
+
 export const grantAccessSchema = z.object({
   identifier:   z.string().min(1, 'Email or phone required').max(100),
   name:         z.string().max(100).optional().default(''),
