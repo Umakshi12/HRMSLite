@@ -1,7 +1,6 @@
 import { useState, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { getSheetSummary, bulkImportCSV } from '../lib/api'
-import { getSheets } from '../lib/mockData'
 import { Upload, FileText, CheckCircle, AlertCircle, X } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -15,7 +14,7 @@ export default function BulkImportPage() {
   const [result, setResult] = useState(null)
 
   const { data: summary } = useQuery({ queryKey: ['sheet-summary'], queryFn: getSheetSummary })
-  const sheets = summary?.sheets?.length ? summary.sheets.map(s => s.name) : getSheets()
+  const sheets = summary?.sheets?.length ? summary.sheets.map(s => s.name) : []
 
   const handleFile = (f) => {
     if (!f) return

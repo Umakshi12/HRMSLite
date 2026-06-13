@@ -177,6 +177,10 @@ export async function getSpreadsheets() {
   return await apiFetch(API.SPREADSHEETS)
 }
 
+export async function getServiceAccountEmail() {
+  return await apiFetch('/service-account-email')
+}
+
 export async function addSpreadsheet(spreadsheet_id, name) {
   return await apiFetch(API.SPREADSHEETS, { method: 'POST', body: JSON.stringify({ spreadsheet_id, name }) })
 }

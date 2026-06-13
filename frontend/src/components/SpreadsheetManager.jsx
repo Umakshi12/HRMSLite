@@ -1,14 +1,14 @@
 import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { 
-  getSpreadsheets, addSpreadsheet, removeSpreadsheet, 
-  syncSpreadsheet, syncAllSpreadsheets, getSpreadsheetData, getUsers, 
-  getSheetGrants, updateSheetGrants 
+import {
+  getSpreadsheets, addSpreadsheet, removeSpreadsheet,
+  syncSpreadsheet, syncAllSpreadsheets, getSpreadsheetData, getUsers,
+  getSheetGrants, updateSheetGrants, getServiceAccountEmail
 } from '../lib/api'
-import { 
-  Database, Plus, Trash2, CheckCircle, AlertCircle, 
-  RefreshCw, ExternalLink, DownloadCloud, Table, Users, 
-  Shield, Save, Search, X
+import {
+  Database, Plus, Trash2, CheckCircle, AlertCircle,
+  RefreshCw, ExternalLink, DownloadCloud, Table, Users,
+  Shield, Save, Search, X, Copy, Info
 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -29,6 +29,13 @@ export default function SpreadsheetManager() {
     queryFn: getSpreadsheets,
     placeholderData: [],
   })
+
+  const { data: saData } = useQuery({
+    queryKey: ['service-account-email'],
+    queryFn: getServiceAccountEmail,
+    staleTime: Infinity,
+  })
+  const serviceAccountEmail = saData?.email || null
   const spreadsheets = Array.isArray(data) ? data : []
 
   const { data: sheetData, isLoading: isSheetLoading } = useQuery({
@@ -165,13 +172,39 @@ export default function SpreadsheetManager() {
       </div>
 
       {/* Add new spreadsheet */}
-      <div className="bg-white border border-slate-200 rounded-xl p-6">
-        <h3 className="font-semibold text-slate-700 mb-4 flex items-center gap-2">
+      <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+        <h3 className="font-semibold text-slate-700 flex items-center gap-2">
           <Plus className="w-4 h-4 text-blue-500" />Add New Spreadsheet
         </h3>
+
+        {/* Service account helper banner */}
+        {serviceAccountEmail && (
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+            <p className="text-xs font-bold text-blue-700 flex items-center gap-1.5 mb-2">
+              <Info className="w-3.5 h-3.5" />Step 1 — Share your Google Sheet first
+            </p>
+            <p className="text-xs text-blue-600 mb-2">
+              Open your spreadsheet → <strong>Share</strong> → add this email as <strong>Editor</strong>:
+            </p>
+            <div className="flex items-center gap-2 bg-white border border-blue-200 rounded px-3 py-2">
+              <code className="text-xs text-blue-800 flex-1 break-all">{serviceAccountEmail}</code>
+              <button
+                onClick={() => { navigator.clipboard.writeText(serviceAccountEmail); toast.success('Copied!') }}
+                className="shrink-0 text-blue-500 hover:text-blue-700 transition" title="Copy email">
+                <Copy className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <p className="text-[11px] text-blue-500 mt-2">
+              Then set "Anyone with the link" to <strong>Restricted</strong> — only this service account needs access.
+            </p>
+          </div>
+        )}
+
         <div className="flex gap-3 items-end">
           <div className="flex-1">
-            <label className="block text-xs font-semibold text-slate-500 mb-1">Spreadsheet ID *</label>
+            <label className="block text-xs font-semibold text-slate-500 mb-1">
+              {serviceAccountEmail ? 'Step 2 — ' : ''}Spreadsheet ID *
+            </label>
             <input value={newId} onChange={e => setNewId(e.target.value)}
               placeholder="e.g. 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms"
               className="field-input font-mono text-sm" />

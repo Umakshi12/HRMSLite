@@ -2,7 +2,6 @@ import { useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import useStore from '../lib/store'
 import { getSheetSummary } from '../lib/api'
-import { getSheets } from '../lib/mockData'
 import { LayoutDashboard, Shield, LogOut, Users, FileSpreadsheet, Upload, Database, ScrollText, Zap } from 'lucide-react'
 
 export default function Sidebar() {
@@ -19,7 +18,7 @@ export default function Sidebar() {
 
   const allSheets = summary?.sheets?.length
     ? summary.sheets.map((s) => ({ name: s.name, count: s.count }))
-    : getSheets().map((name) => ({ name, count: 0 }))
+    : []
 
   const sheets = (() => {
     if (isAdmin) return allSheets

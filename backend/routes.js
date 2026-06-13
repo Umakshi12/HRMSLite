@@ -9,6 +9,7 @@ import multer from 'multer';
 import { parse } from 'csv-parse/sync';
 
 import { getAuthUrl, handleCallback } from './googleAuthService.js';
+import { getServiceAccountEmail } from './emailService.js';
 
 const router = express.Router();
 
@@ -163,9 +164,26 @@ router.post('/logout', (req, res) => {
   res.json({ success: true, message: 'Logged out successfully' });
 });
 
-router.get('/me', requireAuth, (req, res) => {
-  res.json({ success: true, user: req.user });
-});
+router.get('/me', requireAuth, asyncHandler(async (req, res) => {
+  const user = await prisma.user.findUnique({
+    where: { login_id: req.user.login_id },
+    include: { tabAccess: true },
+  });
+  if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+  res.json({
+    success: true,
+    user: {
+      id: user.id,
+      login_id: user.login_id,
+      identifier: user.identifier,
+      name: user.name,
+      role: user.role,
+      status: user.status,
+      tenant_id: user.tenant_id,
+      sheet_access: user.tabAccess.map(a => a.tab_name),
+    },
+  });
+}));
 
 router.post('/change-password', requireAuth, asyncHandler(async (req, res) => {
   const { old_password, new_password } = req.body;
@@ -909,6 +927,12 @@ router.delete('/revoke-tab-access', requireAuth, isAdminOrSuper, asyncHandler(as
     res.status(500).json({ success: false, message: 'Operation failed. Please try again.' });
   }
 }));
+
+// ── Service account info (for frontend "share your sheet" helper) ──
+router.get('/service-account-email', requireAuth, isAdminOrSuper, (req, res) => {
+  const email = getServiceAccountEmail();
+  res.json({ success: true, email: email || null });
+});
 
 // ── Cache ──
 router.post('/clear-cache', requireAuth, isAdminOrSuper, asyncHandler(async (req, res) => {

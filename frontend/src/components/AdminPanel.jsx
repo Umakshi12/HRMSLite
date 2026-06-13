@@ -4,7 +4,6 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { grantAccessSchema } from '../lib/schemas'
 import { getUsers, grantAccess, resetPassword, removeUser, getSheetSummary, updateUserRights, updateUserLimit, getAdminDashboard, apiFetch } from '../lib/api'
-import { getSheets } from '../lib/mockData'
 import useStore from '../lib/store'
 import { toast } from 'sonner'
 import { UserPlus, Key, Trash2, ShieldCheck, Edit2, Check, X, ShieldAlert, Send, ToggleLeft, ToggleRight } from 'lucide-react'
@@ -32,7 +31,7 @@ export default function AdminPanel() {
   const [editingProfile, setEditingProfile] = useState(null)   // user object for EditProfileModal
 
   const { data: summaryData } = useQuery({ queryKey: ['sheet-summary'], queryFn: getSheetSummary })
-  const sheets = summaryData?.sheets?.length ? summaryData.sheets.map((s) => s.name) : getSheets()
+  const sheets = summaryData?.sheets?.length ? summaryData.sheets.map((s) => s.name) : []
 
   const { data: usersData, isLoading, isError: usersError } = useQuery({
     queryKey: ['users'],

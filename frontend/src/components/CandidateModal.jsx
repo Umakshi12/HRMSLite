@@ -2,7 +2,6 @@ import { useEffect, useMemo } from 'react'
 import { useForm } from 'react-hook-form'
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query'
 import { addCandidate, editCandidate, getSheetSummary, getSpreadsheets, sanitizeObject } from '../lib/api'
-import { getSheets } from '../lib/mockData'
 import { INDIAN_STATES, EXPERIENCE_OPTIONS, EDUCATION_OPTIONS, TIMING_OPTIONS, MARITAL_OPTIONS, GENDER_OPTIONS, VERIFICATION_OPTIONS } from '../lib/config'
 import useStore from '../lib/store'
 import { toast } from 'sonner'
@@ -16,7 +15,7 @@ export default function CandidateModal({ editData, onClose }) {
 
   // Get dynamic sheet list
   const { data: summary } = useQuery({ queryKey: ['sheet-summary'], queryFn: getSheetSummary })
-  const sheets = summary?.sheets?.length ? summary.sheets.map((s) => s.name) : getSheets()
+  const sheets = summary?.sheets?.length ? summary.sheets.map((s) => s.name) : []
 
   const { data: spreadsheets } = useQuery({ queryKey: ['spreadsheets'], queryFn: getSpreadsheets, placeholderData: [] })
 

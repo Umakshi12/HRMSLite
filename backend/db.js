@@ -56,33 +56,13 @@ class ProductionDatabase {
       try {
         const allSheets = await this._getAllSheetsFromRegistry();
         const candidateSheets = allSheets.filter((s) => !EXCLUDED_SHEETS.has(String(s.name).toLowerCase()));
-        
-        // Super admin sees everything
-        if (nr === 'super_admin') {
-          return candidateSheets.map(s => s.name);
-        }
 
-        // Admin sees ONLY tabs they have been granted access to
-        if (nr === 'admin') {
-          const grants = await prisma.userTabAccess.findMany({
-            where: { user_id: user.login_id }
-          });
-          const grantedNames = grants.map(g => g.tab_name);
-          return candidateSheets
-            .filter(s => grantedNames.includes(s.name))
-            .map(s => s.name);
-        }
+        if (nr === 'super_admin') return candidateSheets.map(s => s.name);
 
-        // Users only see explicitly granted sheets from sheet_access_grants
-        if (user && nr === 'user') {
-          const grants = await this.getUserGrants(user.login_id);
-          const grantedSheetIds = grants.map(g => g.sheet_id);
-          return candidateSheets
-            .filter(s => grantedSheetIds.includes(s.id))
-            .map(s => s.name);
-        }
-        
-        return [];
+        // Both admin and user: read grants from Prisma (single source of truth)
+        const grants = await prisma.userTabAccess.findMany({ where: { user_id: user.login_id } });
+        const grantedNames = new Set(grants.map(g => g.tab_name));
+        return candidateSheets.filter(s => grantedNames.has(s.name)).map(s => s.name);
       } catch (err) {
         console.warn(`Falling back to static sheet list: ${err.message}`);
         return FALLBACK_SHEETS;
@@ -350,9 +330,32 @@ class ProductionDatabase {
     try { return JSON.parse(access); } catch { return access.split(',').map(s => s.trim()); }
   }
 
+  /** Derive a clean login_id from name: "Ruchi Joshi" → "ruchi.joshi", with collision suffix */
+  async _generateLoginId(name) {
+    const base = String(name || '')
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9\s]/g, '')
+      .trim()
+      .replace(/\s+/g, '.');
+    const slug = base || 'user';
+    // Try base, then base2, base3 …
+    let candidate = slug;
+    let suffix = 2;
+    while (await prisma.user.findUnique({ where: { login_id: candidate } })) {
+      candidate = `${slug}${suffix++}`;
+    }
+    return candidate;
+  }
+
   async grantAccess(data) {
-    const newLoginId = 'sheetsync_' + Math.random().toString(36).slice(2, 8);
-    const tempPassword = Math.random().toString(36).slice(-8);
+    if (!data.name || !data.name.trim()) {
+      return { success: false, message: 'Name is required to create a user.' };
+    }
+    const newLoginId = await this._generateLoginId(data.name);
+    // Generate a readable temp password: word + 4-digit number
+    const words = ['Spring', 'Lotus', 'River', 'Cloud', 'Stone'];
+    const tempPassword = words[Math.floor(Math.random() * words.length)] + Math.floor(1000 + Math.random() * 9000);
     try {
       const hashedPassword = await hashPassword(tempPassword);
       const normalizedRole = this.normalizeRole(data.role || 'user');
@@ -394,7 +397,8 @@ class ProductionDatabase {
 
       let emailSent = false;
       if (isEmail) {
-        emailSent = await sendWelcomeEmail(data.identifier, newLoginId, tempPassword);
+        const result = await sendWelcomeEmail(data.identifier, newLoginId, tempPassword, data.name || '');
+        emailSent = result.sent || result.mock;
       }
 
       if (hasPhone && process.env.TWILIO_ACCOUNT_SID) {
@@ -1986,45 +1990,52 @@ class ProductionDatabase {
 
   async getGrantsForSheet(sheet_id) {
     try {
-      await this.ensureGrantsSheet();
-      const rows = await sheetsAPI.getSheetData('sheet_access_grants!A:D');
-      const grants = sheetsAPI.rowsToObjects(rows);
-      return grants.filter(g => (g.sheet_id || g['sheet id']) === sheet_id);
+      // Resolve Prisma Spreadsheet.id from Google sheet_id
+      const ss = await prisma.spreadsheet.findUnique({ where: { sheet_id } });
+      if (!ss) return [];
+      const grants = await prisma.userTabAccess.findMany({
+        where: { spreadsheet_id: ss.id },
+        include: { user: { select: { login_id: true, identifier: true, name: true, role: true } } },
+      });
+      return grants.map(g => ({
+        user_id: g.user_id,
+        tab_name: g.tab_name,
+        granted_by: g.granted_by,
+        granted_at: g.granted_at,
+        identifier: g.user?.identifier,
+        name: g.user?.name,
+        role: g.user?.role,
+      }));
     } catch (e) {
+      console.error('getGrantsForSheet error:', e.message);
       return [];
     }
   }
 
   async updateGrantsForSheet(sheet_id, user_ids, granted_by) {
     try {
-      await this.ensureGrantsSheet();
-      const rows = await sheetsAPI.getSheetData('sheet_access_grants!A:D');
-      const headers = (rows && rows.length > 0) ? rows[0] : ['sheet_id', 'user_id', 'granted_by', 'granted_at'];
-      const sheetIdIdx = this.resolveHeaderIndex(headers, ['sheet_id', 'sheet id']);
-      
-      // Filter out existing grants for this sheet
-      const newRows = [headers];
-      if (rows && rows.length > 1) {
-        for (let i = 1; i < rows.length; i++) {
-          if (rows[i][sheetIdIdx] !== sheet_id) {
-            newRows.push(rows[i]);
-          }
+      const ss = await prisma.spreadsheet.findUnique({
+        where: { sheet_id },
+        include: { tabs: true },
+      });
+      if (!ss) return { success: false, message: 'Spreadsheet not found' };
+
+      // Delete all existing grants for this spreadsheet then re-create
+      await prisma.userTabAccess.deleteMany({ where: { spreadsheet_id: ss.id } });
+
+      for (const uid of user_ids) {
+        for (const tab of ss.tabs) {
+          await prisma.userTabAccess.upsert({
+            where: { user_id_spreadsheet_id_tab_name: { user_id: uid, spreadsheet_id: ss.id, tab_name: tab.tab_name } },
+            update: { granted_by },
+            create: { user_id: uid, spreadsheet_id: ss.id, tab_name: tab.tab_name, granted_by },
+          });
         }
       }
 
-      // Add new grants
-      const now = new Date().toISOString();
-      for (const user_id of user_ids) {
-        const row = Array.from({ length: headers.length }, () => '');
-        this.setIfHeaderExists(row, headers, ['sheet_id', 'sheet id'], sheet_id);
-        this.setIfHeaderExists(row, headers, ['user_id', 'user id'], user_id);
-        this.setIfHeaderExists(row, headers, ['granted_by', 'granted by'], granted_by);
-        this.setIfHeaderExists(row, headers, ['granted_at', 'granted at'], now);
-        newRows.push(row);
-      }
-
-      await sheetsAPI.updateFullSheet('sheet_access_grants', newRows);
-      cache.invalidateSheetData();
+      // Bust per-user sheet-names cache so they see changes on next request
+      cache.invalidate(/^sheet-names-/);
+      await this.logActivity({ action: 'UPDATE_GRANTS', actor: granted_by, details: `Updated grants for ${sheet_id}: ${user_ids.join(', ')}` });
       return { success: true };
     } catch (err) {
       console.error('updateGrantsForSheet error:', err);

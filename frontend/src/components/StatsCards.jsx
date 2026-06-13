@@ -1,22 +1,17 @@
 import { useQuery } from '@tanstack/react-query'
 import { getSheetSummary } from '../lib/api'
-import * as mock from '../lib/mockData'
 import { Users, UserCheck, UserPlus, FileSpreadsheet } from 'lucide-react'
 
 export default function StatsCards() {
-  const { data: rawData, isLoading, isError } = useQuery({
+  const { data: rawData, isLoading } = useQuery({
     queryKey: ['sheet-summary'],
     queryFn: getSheetSummary,
     retry: 1,
   })
 
-  // Fallback to mock if API fails
-  const data = isError ? mock.mockGetSheetSummary() : rawData
-
-  // Handle both { sheets: [] } and [ { name: '', count: 0 } ]
-  const sheets = Array.isArray(data) ? data : (data?.sheets || [])
-  const total = data?.total ?? sheets.reduce((s, sh) => s + (sh.count || 0), 0)
-  const verified = data?.total_verified ?? sheets.reduce((s, sh) => s + (sh.verified || 0), 0)
+  const sheets = Array.isArray(rawData) ? rawData : (rawData?.sheets || [])
+  const total = rawData?.total ?? sheets.reduce((s, sh) => s + (sh.count || 0), 0)
+  const verified = rawData?.total_verified ?? sheets.reduce((s, sh) => s + (sh.verified || 0), 0)
 
   const cards = [
     { label: 'Total Candidates', value: total, icon: Users, color: 'bg-blue-50 text-blue-600' },
