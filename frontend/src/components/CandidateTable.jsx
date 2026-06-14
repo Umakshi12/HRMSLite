@@ -148,6 +148,7 @@ export default function CandidateTable({ onEdit }) {
   const { user, token, activeSheet, searchQuery, searchAllSheets, filters, setFilters } = useStore()
   const [sorting, setSorting] = useState([{ id: 'last_updated', desc: true }])
   const [page, setPage] = useState(1)
+  const [activeTab, setActiveTab] = useState(null)
   const [descPopup, setDescPopup] = useState(null)
   const [showImportWizard, setShowImportWizard] = useState(false)
   const [syncing, setSyncing] = useState(false)
@@ -178,17 +179,19 @@ export default function CandidateTable({ onEdit }) {
     onError: (err) => toast.error(`Failed to remove: ${err.message}`)
   })
 
-  useEffect(() => { setPage(1) }, [activeSheet, searchAllSheets, searchQuery, JSON.stringify(filters)])
+  // Reset tab and page when sheet changes
+  useEffect(() => { setActiveTab(null); setPage(1) }, [activeSheet])
+  useEffect(() => { setPage(1) }, [searchAllSheets, searchQuery, JSON.stringify(filters), activeTab])
 
   const { data, isLoading, isFetching } = useQuery({
-    queryKey: ['sheet-data', activeSheet, searchAllSheets, searchQuery, filters, page],
+    queryKey: ['sheet-data', activeSheet, searchAllSheets, searchQuery, filters, page, activeTab],
     queryFn: () => {
       const targetSheet = searchAllSheets ? 'all' : activeSheet
       const payloadFilters = {
         ...filters,
         ...(searchQuery?.trim() ? { search: searchQuery.trim() } : {}),
       }
-      return applyFilters(targetSheet, payloadFilters, page, PAGE_SIZE)
+      return applyFilters(targetSheet, payloadFilters, page, PAGE_SIZE, searchAllSheets ? null : activeTab)
     },
     placeholderData: (prev) => prev,
     staleTime: 2 * 60 * 1000,
@@ -215,12 +218,30 @@ export default function CandidateTable({ onEdit }) {
     return spreadsheets.find(s => s.name === activeSheet && s.is_active);
   }, [spreadsheets, activeSheet, searchAllSheets]);
 
+  // Tabs for this spreadsheet (only shown when > 1 tab)
+  const sheetTabs = useMemo(() => {
+    if (!dynamicSheet?.tabs || dynamicSheet.tabs.length <= 1) return [];
+    return dynamicSheet.tabs.filter(t => !t.deleted_at);
+  }, [dynamicSheet]);
+
+  // Effective active tab name (null = show all)
+  const effectiveTab = searchAllSheets ? null : activeTab;
+
+  // Columns for the currently-active tab
+  const activeTabColumns = useMemo(() => {
+    if (!effectiveTab || !dynamicSheet?.tabs) return null;
+    const tab = dynamicSheet.tabs.find(t => t.tab_name === effectiveTab);
+    if (!tab?.headers?.length) return null;
+    return [...tab.headers].sort((a, b) => a.index - b.index).map(h => h.name || `Col ${h.index + 1}`);
+  }, [effectiveTab, dynamicSheet]);
+
   const handleRefresh = async () => {
     if (dynamicSheet) {
       try {
         setSyncing(true);
         const res = await syncSpreadsheet(dynamicSheet.sheet_id);
-        toast.success(`Synced ${res.rows_synced} rows from Google Drive`);
+        const totalSynced = res.results?.reduce((s, r) => s + (r.synced || 0), 0) ?? 0;
+        toast.success(`Synced ${totalSynced} rows from Google Sheets`);
       } catch (err) {
         toast.error('Sync failed: ' + err.message);
       } finally {
@@ -263,7 +284,9 @@ export default function CandidateTable({ onEdit }) {
 
   const columns = useMemo(() => {
     let baseHeaders = [];
-    if (dynamicSheet && dynamicSheet.columns && dynamicSheet.columns.length > 0) {
+    if (activeTabColumns && activeTabColumns.length > 0) {
+      baseHeaders = activeTabColumns;
+    } else if (dynamicSheet && dynamicSheet.columns && dynamicSheet.columns.length > 0) {
       baseHeaders = dynamicSheet.columns.map(c => c.name || c);
     } else if (rows && rows.length > 0) {
       // Auto-detect from data keys
@@ -418,7 +441,7 @@ export default function CandidateTable({ onEdit }) {
         ),
       },
     ];
-  }, [dynamicSheet, rows, removeMut, activeSheet, onEdit]);
+  }, [dynamicSheet, activeTabColumns, rows, removeMut, activeSheet, onEdit]);
 
   const table = useReactTable({
     data: rows,
@@ -443,11 +466,41 @@ export default function CandidateTable({ onEdit }) {
 
   return (
     <div className="bg-white border border-slate-200 rounded-xl overflow-hidden anti-copy h-full flex flex-col" onContextMenu={handleContextMenu}>
+      {/* Tab Switcher — only shown for multi-tab spreadsheets */}
+      {sheetTabs.length > 0 && !searchAllSheets && (
+        <div className="px-4 pt-3 pb-0 flex items-center gap-1 border-b border-slate-100 overflow-x-auto">
+          <button
+            onClick={() => setActiveTab(null)}
+            className={`px-3.5 py-2 text-xs font-semibold rounded-t-lg border-b-2 transition whitespace-nowrap cursor-pointer ${
+              effectiveTab === null
+                ? 'border-blue-500 text-blue-600 bg-blue-50/60'
+                : 'border-transparent text-slate-500 hover:text-slate-700 hover:bg-slate-50'
+            }`}
+          >
+            All Tabs
+          </button>
+          {sheetTabs.map(tab => (
+            <button
+              key={tab.tab_name}
+              onClick={() => setActiveTab(tab.tab_name)}
+              className={`px-3.5 py-2 text-xs font-semibold rounded-t-lg border-b-2 transition whitespace-nowrap cursor-pointer ${
+                effectiveTab === tab.tab_name
+                  ? 'border-blue-500 text-blue-600 bg-blue-50/60'
+                  : 'border-transparent text-slate-500 hover:text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              {tab.tab_name}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Toolbar */}
       <div className="px-4 py-3 flex items-center justify-between border-b border-slate-100">
         <div className="flex items-center gap-3">
           <p className="text-xs text-slate-500 font-medium">
-            Showing <strong className="text-slate-700">{rows.length}</strong> of <strong className="text-slate-700">{total}</strong> candidates
+            Showing <strong className="text-slate-700">{rows.length}</strong> of <strong className="text-slate-700">{total}</strong> records
+            {effectiveTab && <span className="ml-1 text-blue-500 font-semibold">· {effectiveTab}</span>}
           </p>
           {(isFetching || syncing) && <RefreshCw className="w-3.5 h-3.5 text-blue-500 animate-spin" />}
           {activeFilterCount > 0 && (

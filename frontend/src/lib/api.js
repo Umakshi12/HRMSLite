@@ -103,6 +103,9 @@ export const checkSession = () =>
 export const changePassword = (login_id, old_password, new_password) =>
   apiFetch(API.CHANGE_PASSWORD, { method: 'POST', body: JSON.stringify({ login_id, old_password, new_password }) })
 
+export const forgotPassword = (identifier) =>
+  apiFetch('/forgot-password', { method: 'POST', body: JSON.stringify({ identifier }) })
+
 // ── Data ──
 export async function getSheetData(sheet, page = 1, limit = 50) {
   const url = sheet === 'all' || !sheet 
@@ -115,8 +118,8 @@ export async function getSheetSummary() {
   return apiFetch(API.GET_SUMMARY)
 }
 
-export async function applyFilters(sheet, filters, page = 1, limit = 50) {
-  return await apiFetch(API.APPLY_FILTERS, { method: 'POST', body: JSON.stringify({ sheet, filters, page, limit }) })
+export async function applyFilters(sheet, filters, page = 1, limit = 50, tab = null) {
+  return await apiFetch(API.APPLY_FILTERS, { method: 'POST', body: JSON.stringify({ sheet, filters, page, limit, ...(tab ? { tab } : {}) }) })
 }
 
 export async function addCandidate(sheet, candidate, added_by) {
@@ -229,6 +232,10 @@ export async function bulkImportCSV(sheet, file, onProgress) {
     throw new Error(body.message || `Import failed: ${res.status}`)
   }
   return res.json()
+}
+
+export async function getSheetHeaders(sheet) {
+  return apiFetch(`/import/sheet-headers?sheet=${encodeURIComponent(sheet)}`)
 }
 
 export async function importPreview(file) {

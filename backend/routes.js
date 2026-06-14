@@ -9,12 +9,28 @@ import multer from 'multer';
 import { parse } from 'csv-parse/sync';
 
 import { getAuthUrl, handleCallback } from './googleAuthService.js';
-import { getServiceAccountEmail } from './emailService.js';
+import { getServiceAccountEmail, sendPasswordResetEmail } from './emailService.js';
 
 const router = express.Router();
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
+const resetPasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: { success: false, message: 'Too many password reset attempts. Try again in 15 minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const forgotPasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: { success: false, message: 'Too many requests. Try again in 15 minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 // ── Role constants ──
 export const ROLES = {
@@ -110,8 +126,8 @@ const enforceSheetAccess = asyncHandler(async (req, res, next) => {
   const user = req.user;
   const nr = normalizeRole(user?.role);
   
-  // Only Super Admin has full automatic access. Admin and User check explicit grants.
-  if (nr === 'super_admin') return next();
+  // Super Admin and Admin have full automatic access. Only regular users check explicit grants.
+  if (nr === 'super_admin' || nr === 'admin') return next();
 
   // Determine target sheet name from various sources
   const sheetName = req.query.sheet || req.body.sheet || req.body.target_sheet;
@@ -157,6 +173,50 @@ router.post('/login', validateRequest(loginSchema), asyncHandler(async (req, res
   } else {
     res.status(401).json(result);
   }
+}));
+
+// POST /forgot-password — public, no auth required
+// Generates a new temp password and emails it. Always returns generic success to prevent user enumeration.
+router.post('/forgot-password', forgotPasswordLimiter, asyncHandler(async (req, res) => {
+  const { identifier } = req.body;
+  if (!identifier || String(identifier).trim().length < 1) {
+    return res.status(400).json({ success: false, message: 'Email or Login ID is required.' });
+  }
+
+  // Always respond with success to prevent user enumeration
+  const genericOk = { success: true, message: 'If that account exists, a new password has been sent to the registered email.' };
+
+  try {
+    const user = await prisma.user.findFirst({
+      where: {
+        OR: [
+          { identifier: identifier.trim() },
+          { login_id: identifier.trim() },
+        ],
+        status: 'active',
+      },
+      select: { login_id: true, identifier: true, name: true, role: true },
+    });
+
+    if (!user || !user.identifier?.includes('@')) {
+      return res.json(genericOk);
+    }
+
+    const result = await db.resetPassword(user.login_id, 'self-service');
+    if (result.success && result.new_password) {
+      sendPasswordResetEmail(
+        user.identifier,
+        user.login_id,
+        result.new_password,
+        user.name || '',
+        'Self-service reset',
+      ).catch(e => console.error('[Email] Forgot-password email failed:', e.message));
+    }
+  } catch (e) {
+    console.error('[ForgotPassword] Error:', e.message);
+  }
+
+  res.json(genericOk);
 }));
 
 router.post('/logout', (req, res) => {
@@ -275,12 +335,12 @@ router.get('/export-sheet', requireAuth, enforceSheetAccess, asyncHandler(async 
 }));
 
 router.post('/apply-filters', requireAuth, enforceSheetAccess, asyncHandler(async (req, res) => {
-  const { sheet, filters, page, limit, search_all_sheets } = req.body;
+  const { sheet, filters, page, limit, search_all_sheets, tab } = req.body;
   const targetSheet = search_all_sheets ? 'all' : sheet;
   // SECURITY: Cap pagination limit
   const safeLimit = Math.min(Math.max(1, parseInt(limit) || 50), 100);
   const safePage = Math.max(1, parseInt(page) || 1);
-  res.json(await db.applyFilters(targetSheet, filters || {}, safePage, safeLimit, req.user));
+  res.json(await db.applyFilters(targetSheet, filters || {}, safePage, safeLimit, req.user, tab || null));
 }));
 
 router.post('/add-candidate', requireAuth, enforceSheetAccess, validateRequest(addCandidateSchema), asyncHandler(async (req, res) => {
@@ -438,10 +498,9 @@ router.post('/spreadsheets/:id/sync', requireAuth, isAdminOrSuper, asyncHandler(
 
 router.get('/spreadsheets/:id/data', requireAuth, isAdminOrSuper, asyncHandler(async (req, res) => {
   try {
-    const data = await db.getSheetDataForSpreadsheet(req.params.id);
-    res.json({ success: true, data });
+    const result = await db.getSheetDataForSpreadsheet(req.params.id);
+    res.json({ success: true, tabs: result.tabs, headers: result.headers, data: result.data });
   } catch (e) {
-    // SECURITY: Generic error message to prevent DB schema leak
     res.status(400).json({ success: false, message: 'Failed to retrieve spreadsheet data' });
   }
 }));
@@ -484,6 +543,18 @@ router.get('/cron/sync-spreadsheets', asyncHandler(async (req, res) => {
 }));
 
 // ── Advanced CSV Import Wizard ──
+
+// Step 0: Get the target sheet's current headers (empty array if sheet is new)
+router.get('/import/sheet-headers', requireAuth, asyncHandler(async (req, res) => {
+  const { sheet } = req.query;
+  if (!sheet) return res.status(400).json({ success: false, headers: [] });
+  try {
+    const rows = await sheetsAPI.getSheetDataFull(sheet);
+    res.json({ success: true, headers: rows[0] || [] });
+  } catch {
+    res.json({ success: true, headers: [] });
+  }
+}));
 
 // Step 1: Preview (Get headers and first 5 rows)
 router.post('/import/preview', requireAuth, upload.single('file'), asyncHandler(async (req, res) => {
@@ -609,7 +680,7 @@ router.post('/grant-access', requireAuth, isAdminOrSuper, asyncHandler(async (re
   res.status(result.success ? 200 : 400).json(result);
 }));
 
-router.post('/reset-password', requireAuth, isAdminOrSuper, asyncHandler(async (req, res) => {
+router.post('/reset-password', requireAuth, isAdminOrSuper, resetPasswordLimiter, asyncHandler(async (req, res) => {
   const { target_login_id } = req.body;
   if (!target_login_id) {
     return res.status(400).json({ success: false, message: 'target_login_id is required' });
@@ -621,6 +692,21 @@ router.post('/reset-password', requireAuth, isAdminOrSuper, asyncHandler(async (
     if (!ownership) return res.status(403).json({ success: false, message: 'You can only reset passwords of your own users' });
   }
   const result = await db.resetPassword(target_login_id, req.user?.login_id);
+  if (result.success && result.new_password) {
+    const target = await prisma.user.findUnique({
+      where: { login_id: target_login_id },
+      select: { identifier: true, name: true, login_id: true },
+    });
+    if (target?.identifier) {
+      sendPasswordResetEmail(
+        target.identifier,
+        target.login_id,
+        result.new_password,
+        target.name || '',
+        req.user?.login_id,
+      ).catch(e => console.error('[Email] Reset email failed silently:', e.message));
+    }
+  }
   res.status(result.success ? 200 : 400).json(result);
 }));
 
@@ -675,8 +761,8 @@ router.put('/update-user-limit', requireAuth, isSuperAdmin, asyncHandler(async (
     return res.status(400).json({ success: false, message: 'target_login_id and max_users required' });
   
   const parsedMax = parseInt(max_users);
-  if (isNaN(parsedMax) || parsedMax < 0 || parsedMax > 1000) {
-    return res.status(400).json({ success: false, message: 'max_users must be a number between 0 and 1000' });
+  if (isNaN(parsedMax) || parsedMax < 1 || parsedMax > 1000) {
+    return res.status(400).json({ success: false, message: 'max_users must be a number between 1 and 1000' });
   }
 
   const result = await db.updateUserLimit(target_login_id, parsedMax, req.user?.login_id);
@@ -721,7 +807,7 @@ router.post('/send-credentials', requireAuth, isAdminOrSuper, asyncHandler(async
       const defaultCountryCode = process.env.DEFAULT_PHONE_COUNTRY_CODE || '+91';
       await client.messages.create({
         // SECURITY: Build message inline to prevent accidental logging of temp password variable
-        body: `SheetSync Pro\nLogin: ${targetUser.login_id || targetUser.email}\nTemp Password: ${reset.tempPassword}\nChange it after first login.`,
+        body: `SheetSync Pro\nLogin: ${targetUser.login_id}\nTemp Password: ${reset.new_password}\nChange it after first login.`,
         from: process.env.TWILIO_PHONE_NUMBER,
         to: targetUser.phone.startsWith('+') ? targetUser.phone : `${defaultCountryCode}${targetUser.phone}`,
       });
@@ -736,9 +822,9 @@ router.post('/send-credentials', requireAuth, isAdminOrSuper, asyncHandler(async
   try {
     const { sendWelcomeEmail } = await import('./emailService.js');
     await sendWelcomeEmail(
-      targetUser.email || targetUser.identifier,
-      targetUser.login_id || targetUser.email,
-      reset.tempPassword,
+      targetUser.identifier,
+      targetUser.login_id,
+      reset.new_password,
     );
     return res.json({ success: true, channel: 'email' });
   } catch (e) {
@@ -885,7 +971,7 @@ router.post('/grant-tab-access', requireAuth, isAdminOrSuper, asyncHandler(async
 
     // Fetch tab from Prisma
     const tab = await prisma.spreadsheetTab.findFirst({
-      where: { spreadsheet: { spreadsheet_id }, tab_name },
+      where: { spreadsheet_id, tab_name },
     });
     if (!tab) return res.status(404).json({ success: false, message: `Tab '${tab_name}' not found — sync the spreadsheet first` });
 
