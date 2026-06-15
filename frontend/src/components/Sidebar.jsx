@@ -1,11 +1,13 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import useStore from '../lib/store'
 import { getSheetSummary } from '../lib/api'
-import { LayoutDashboard, Shield, LogOut, Users, FileSpreadsheet, Upload, Database, ScrollText, Zap } from 'lucide-react'
+import { LayoutDashboard, Shield, LogOut, FileSpreadsheet, Upload, Database, ScrollText, Zap, KeyRound } from 'lucide-react'
+import ChangePasswordModal from './ChangePasswordModal'
 
 export default function Sidebar() {
   const { user, activeSheet, setActiveSheet, currentView, setView, clearAuth } = useStore()
+  const [showChangePwd, setShowChangePwd] = useState(false)
   const rawRole = String(user?.role).toLowerCase().replace(/\s+/g, '_')
   const isSuperAdmin = rawRole === 'super_admin'
   const isAdmin = rawRole === 'admin' || isSuperAdmin
@@ -16,22 +18,19 @@ export default function Sidebar() {
     placeholderData: { sheets: [] },
   })
 
-  const allSheets = summary?.sheets?.length
+  // getSheetSummary already filters by grants for admin/user — use it directly
+  const sheets = summary?.sheets?.length
     ? summary.sheets.map((s) => ({ name: s.name, count: s.count }))
     : []
 
-  const sheets = (() => {
-    if (isAdmin) return allSheets
-    const access = user?.sheet_access || []
-    if (!access.length || access.includes('All') || access.includes('all')) return allSheets
-    return allSheets.filter(s => access.map(a => a.toLowerCase()).includes(s.name.toLowerCase()))
-  })()
-
+  // Reset activeSheet when it's no longer in the accessible sheet list
   useEffect(() => {
-    if (sheets.length && !sheets.find((s) => s.name === activeSheet)) {
-      setActiveSheet(sheets[0]?.name)
+    if (sheets.length > 0 && !sheets.find(s => s.name === activeSheet)) {
+      setActiveSheet(sheets[0].name)
+    } else if (sheets.length === 0) {
+      setActiveSheet(null)
     }
-  }, [sheets.length])
+  }, [JSON.stringify(sheets.map(s => s.name))])
 
   const navBtn = (view, icon, label, color = 'blue') =>
     `w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-150 ${
@@ -109,6 +108,7 @@ export default function Sidebar() {
 
       {/* User card */}
       <div className="p-3 border-t border-slate-100">
+        {showChangePwd && <ChangePasswordModal onClose={() => setShowChangePwd(false)} />}
         <div className="flex items-center gap-2.5 bg-slate-50 rounded-xl p-2.5">
           <div className={`w-9 h-9 rounded-xl text-white flex items-center justify-center font-bold text-sm shrink-0 ${isSuperAdmin ? 'bg-gradient-to-br from-purple-600 to-indigo-600' : isAdmin ? 'bg-gradient-to-br from-blue-600 to-cyan-500' : 'bg-slate-500'}`}>
             {user?.name?.charAt(0) || user?.identifier?.charAt(0) || 'U'}
@@ -119,6 +119,11 @@ export default function Sidebar() {
               {user?.display_role || user?.role || 'User'}
             </p>
           </div>
+          <button onClick={() => setShowChangePwd(true)}
+            className="w-8 h-8 rounded-lg bg-white text-slate-400 flex items-center justify-center hover:bg-blue-50 hover:text-blue-600 transition shrink-0 border border-slate-200"
+            title="Change Password">
+            <KeyRound className="w-4 h-4" />
+          </button>
           <button onClick={async () => {
             const { logout } = await import('../lib/api');
             try { await logout() } catch {}

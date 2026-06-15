@@ -378,14 +378,14 @@ export default function AdminPanel() {
           {isLoading ? (
             <div className="space-y-3">{Array.from({ length: 4 }).map((_, i) => <div key={i} className="h-20 skeleton rounded-xl" />)}</div>
           ) : (
-            <div className="space-y-2 max-h-[600px] overflow-y-auto pr-1">
+            <div className="space-y-2">
               {users.map((u) => {
                 const canManage = isSuperAdmin || (isAdmin && u.role === 'user' && u.created_by === user?.login_id)
                 const isActive = (u.status || 'active') === 'active'
                 const targetRole = String(u.role).toLowerCase().replace(/\s+/g, '_')
                 const isTargetAdmin = targetRole === 'admin'
                 const isTargetSuperAdmin = targetRole === 'super_admin'
-                const hasFullAccess = isTargetAdmin || isTargetSuperAdmin
+                const hasFullAccess = isTargetSuperAdmin
 
                 return (
                   <div key={u.login_id} className="border border-slate-100 rounded-xl p-3 hover:bg-slate-50/50 transition group">

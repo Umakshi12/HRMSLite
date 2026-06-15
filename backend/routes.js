@@ -126,8 +126,8 @@ const enforceSheetAccess = asyncHandler(async (req, res, next) => {
   const user = req.user;
   const nr = normalizeRole(user?.role);
   
-  // Super Admin and Admin have full automatic access. Only regular users check explicit grants.
-  if (nr === 'super_admin' || nr === 'admin') return next();
+  // Only Super Admin has unrestricted sheet access. Admin and users must have explicit grants.
+  if (nr === 'super_admin') return next();
 
   // Determine target sheet name from various sources
   const sheetName = req.query.sheet || req.body.sheet || req.body.target_sheet;

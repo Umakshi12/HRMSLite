@@ -59,9 +59,7 @@ class ProductionDatabase {
 
         if (nr === 'super_admin') return candidateSheets.map(s => s.name);
 
-        // Admin sees all sheets (same as super_admin); only regular users need explicit grants
-        if (nr === 'admin') return candidateSheets.map(s => s.name);
-
+        // Admin and users only see explicitly granted sheets
         const grants = await prisma.userTabAccess.findMany({ where: { user_id: user.login_id } });
         const grantedSpreadsheetIds = new Set(grants.map(g => g.spreadsheet_id));
         return candidateSheets.filter(s => grantedSpreadsheetIds.has(s.id)).map(s => s.name);
@@ -106,8 +104,8 @@ class ProductionDatabase {
   async resolveTargetSheets(sheet, user) {
     const nr = this.normalizeRole(user?.role);
 
-    // super_admin and admin bypass sheet grants — only regular users need explicit grants
-    if (nr === 'super_admin' || nr === 'admin') {
+    // only super_admin bypasses sheet grants — admin and users need explicit grants
+    if (nr === 'super_admin') {
       if (sheet && sheet !== 'all') return [sheet];
       return this.getCandidateSheets(user);
     }
@@ -504,7 +502,9 @@ class ProductionDatabase {
       return {
         users: users.map(u => ({
           login_id: u.login_id,
+          name: u.name,
           identifier: u.identifier,
+          phone: u.phone,
           role: u.role,
           display_role: this.displayRole(u.role),
           status: u.status,
@@ -583,6 +583,10 @@ class ProductionDatabase {
           ));
         }
       }
+
+      // Bust the target user's sheet-summary and sheet-names caches so they see updated access
+      cache.invalidate(new RegExp(`sheet-summary-${target_login_id}`));
+      cache.invalidate(/^sheet-names-/);
 
       await this.logActivity({
         action: 'UPDATE_PROFILE',
@@ -751,16 +755,16 @@ class ProductionDatabase {
 
   async getSheetSummary(user) {
     const nr = this.normalizeRole(user?.role);
-    // admin shares same cache key as super_admin — both see all sheets
-    const cacheKey = (nr === 'super_admin' || nr === 'admin') ? 'sheet-summary-admin' : `sheet-summary-${user?.login_id || 'anon'}`;
+    // super_admin gets a shared cache; admin and users get per-login caches
+    const cacheKey = nr === 'super_admin' ? 'sheet-summary-admin' : `sheet-summary-${user?.login_id || 'anon'}`;
 
     return cache.getOrFetch(cacheKey, async () => {
       // 1. Get registry of all spreadsheets (Already cached metadata)
       const allRegistered = await this.getRegisteredSpreadsheets();
 
-      // 2. Filter by user access — super_admin and admin see all active sheets
+      // 2. Filter by user access — only super_admin sees all active sheets
       let visibleSheets = [];
-      if (nr === 'super_admin' || nr === 'admin') {
+      if (nr === 'super_admin') {
         visibleSheets = allRegistered.filter(s => s.is_active);
       } else if (user) {
         const grants = await prisma.userTabAccess.findMany({ where: { user_id: user.login_id } });

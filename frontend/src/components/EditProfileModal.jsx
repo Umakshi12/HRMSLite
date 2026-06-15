@@ -4,9 +4,11 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch, sanitizeObject } from '../lib/api'
 import { toast } from 'sonner'
 import { X, Save, Shield, Database, Check, Globe } from 'lucide-react'
+import useStore from '../lib/store'
 
 export default function EditProfileModal({ user, onClose, sheets = [] }) {
   const qc = useQueryClient()
+  const { user: currentUser, setAuth, token } = useStore()
   const [localAccess, setLocalAccess] = useState([])
 
   const { register, handleSubmit, reset, watch } = useForm({
@@ -34,10 +36,20 @@ export default function EditProfileModal({ user, onClose, sheets = [] }) {
         sheet_access: localAccess,
       })
     }),
-    onSuccess: () => {
+    onSuccess: async (_, variables) => {
       toast.success('Profile updated')
+      // Bust all relevant caches
       qc.invalidateQueries({ queryKey: ['users'] })
       qc.invalidateQueries({ queryKey: ['admin-dashboard'] })
+      qc.invalidateQueries({ queryKey: ['sheet-summary'] })
+      qc.invalidateQueries({ queryKey: ['spreadsheets'] })
+      // If editing the currently logged-in user, refresh session so name/role updates instantly
+      if (user.login_id === currentUser?.login_id) {
+        try {
+          const me = await apiFetch('/me')
+          if (me?.user) setAuth(me.user, token)
+        } catch {}
+      }
       onClose()
     },
     onError: (err) => toast.error(err.message)
