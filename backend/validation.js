@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 export const loginSchema = z.object({
   identifier: z.string().min(1, 'Identifier required').max(100).refine(
-    val => z.string().email().safeParse(val).success || /^\+?[1-9]\d{1,14}$/.test(val) || /^[a-zA-Z0-9_-]{3,50}$/.test(val),
+    val => z.string().email().safeParse(val).success || /^\+?[1-9]\d{1,14}$/.test(val) || /^[a-zA-Z0-9._-]{3,50}$/.test(val),
     { message: 'Must be a valid email, phone number, or login ID' }
   ),
   password:   z.string().min(8, 'Password must be at least 8 characters').max(100),

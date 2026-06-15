@@ -25,6 +25,7 @@ export const loginSchema = z.object({
 })
 
 export const grantAccessSchema = z.object({
+  name:         z.string().min(2, 'Full name is required (min 2 chars)'),
   identifier:   z.string().min(1, 'Email or phone required'),
   phone:        z.string().optional().or(z.literal('')),
   role:         z.enum(['user', 'admin']),

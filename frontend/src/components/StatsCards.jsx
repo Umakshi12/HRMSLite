@@ -16,7 +16,7 @@ export default function StatsCards() {
   const cards = [
     { label: 'Total Candidates', value: total, icon: Users, color: 'bg-blue-50 text-blue-600' },
     { label: 'Verified', value: verified, icon: UserCheck, color: 'bg-green-50 text-green-600' },
-    { label: 'Added This Month', value: data?.added_this_month || 0, icon: UserPlus, color: 'bg-amber-50 text-amber-600' },
+    { label: 'Added This Month', value: rawData?.added_this_month || 0, icon: UserPlus, color: 'bg-amber-50 text-amber-600' },
     { label: 'Active Sheets', value: sheets.length, icon: FileSpreadsheet, color: 'bg-teal-50 text-teal-600' },
   ]
 

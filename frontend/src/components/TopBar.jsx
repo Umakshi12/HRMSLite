@@ -26,7 +26,7 @@ export default function TopBar({ onAddCandidate, toggleSidebar, sidebarOpen }) {
             className="flex items-center gap-2 bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 rounded-lg text-sm font-semibold transition shadow-sm cursor-pointer"
           >
             <Plus className="w-4 h-4" />
-            Add Candidate
+            Add Record
           </button>
         )}
         <button className="w-9 h-9 rounded-lg hover:bg-slate-100 flex items-center justify-center text-slate-400 transition cursor-pointer">

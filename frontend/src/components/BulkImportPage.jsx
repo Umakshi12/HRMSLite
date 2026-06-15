@@ -56,7 +56,7 @@ export default function BulkImportPage() {
     <div className="max-w-4xl mx-auto space-y-6">
       <div>
         <h2 className="text-xl font-bold text-slate-800">Bulk CSV Import</h2>
-        <p className="text-sm text-slate-400 mt-1">Upload a CSV file to import multiple candidates at once into any sheet.</p>
+        <p className="text-sm text-slate-400 mt-1">Upload a CSV file to import data into any sheet. Columns are mapped dynamically to the sheet's actual headers.</p>
       </div>
 
       {/* Step 1: File + Sheet */}

@@ -23,6 +23,71 @@ const getTransporter = () =>
 
 export const getServiceAccountEmail = () => SERVICE_ACCOUNT_EMAIL;
 
+export const sendPasswordResetEmail = async (userEmail, loginId, newPassword, name = '', resetBy = '') => {
+  const html = `
+    <div style="font-family:sans-serif;max-width:600px;margin:auto;border:1px solid #e2e8f0;padding:30px;border-radius:12px;">
+      <div style="text-align:center;margin-bottom:24px;">
+        <div style="display:inline-block;background:#2563eb;border-radius:12px;padding:12px 20px;">
+          <span style="color:white;font-size:18px;font-weight:800;">${APP_NAME}</span>
+        </div>
+      </div>
+
+      <h2 style="color:#1e293b;margin:0 0 8px;">Password Reset${name ? `, ${name}` : ''}</h2>
+      <p style="color:#475569;margin:0 0 20px;">
+        Your password has been reset by an administrator${resetBy ? ` (${resetBy})` : ''}.
+        Use the credentials below to sign in.
+      </p>
+
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;padding:18px;border-radius:8px;margin:0 0 20px;">
+        <p style="margin:0 0 8px;font-size:13px;color:#64748b;">🔑 <strong>Your new credentials</strong></p>
+        <p style="margin:4px 0;font-size:14px;color:#1e293b;"><strong>Login ID:</strong> <span style="font-family:monospace;background:#e2e8f0;padding:2px 6px;border-radius:4px;">${loginId}</span></p>
+        <p style="margin:4px 0;font-size:14px;color:#1e293b;"><strong>New Password:</strong> <span style="font-family:monospace;background:#e2e8f0;padding:2px 6px;border-radius:4px;">${newPassword}</span></p>
+        <p style="margin:4px 0;font-size:12px;color:#94a3b8;">(You can also use your email address to sign in)</p>
+      </div>
+
+      <div style="background:#fef9c3;border:1px solid #fde047;border-radius:8px;padding:12px 16px;margin:0 0 20px;">
+        <p style="margin:0;font-size:13px;color:#854d0e;">
+          ⚠️ <strong>Action required:</strong> Please sign in and change your password immediately.
+          If you did not request this reset, contact your administrator right away.
+        </p>
+      </div>
+
+      <div style="text-align:center;margin:24px 0;">
+        <a href="${FRONTEND_URL}" style="display:inline-block;background:#2563eb;color:white;padding:12px 28px;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px;">
+          Sign In Now →
+        </a>
+      </div>
+
+      <p style="font-size:11px;color:#94a3b8;text-align:center;margin:0;">
+        This is an automated message from ${APP_NAME}. Do not reply to this email.
+      </p>
+    </div>`;
+
+  if (isMockMode()) {
+    console.log('\n======== MOCK PASSWORD RESET EMAIL ========');
+    console.log(`To: ${userEmail}`);
+    console.log(`Login ID: ${loginId}`);
+    console.log(`New Password: ${newPassword}`);
+    console.log(`Reset By: ${resetBy || 'admin'}`);
+    console.log('==========================================\n');
+    return { sent: false, mock: true };
+  }
+
+  try {
+    const info = await getTransporter().sendMail({
+      from: process.env.EMAIL_FROM || process.env.SMTP_USER,
+      to: userEmail,
+      subject: `[${APP_NAME}] Your password has been reset`,
+      html,
+    });
+    console.log(`[Email] Password reset email sent to ${userEmail}: ${info.response}`);
+    return { sent: true };
+  } catch (error) {
+    console.error('[Email] Password reset send failed:', error.message);
+    return { sent: false, error: error.message };
+  }
+};
+
 export const sendWelcomeEmail = async (userEmail, loginId, password, name = '') => {
   const sharingSection = SERVICE_ACCOUNT_EMAIL
     ? `

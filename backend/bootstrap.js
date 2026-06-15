@@ -1,52 +1,74 @@
-import db from './db.js';
 import * as sheetsAPI from './googleSheetsService.js';
 import { hashPassword } from './auth.js';
+import dotenv from 'dotenv';
 
-const ADMIN_EMAIL = 'admin@sheetsync.pro';
-const ADMIN_PASSWORD = 'Admin@123456';
+dotenv.config();
+
+const ADMIN_EMAIL    = process.env.BOOTSTRAP_ADMIN_EMAIL    || 'admin@sheetsync.pro';
+const ADMIN_LOGIN_ID = process.env.BOOTSTRAP_ADMIN_LOGIN_ID || 'sheetsync_admin01';
+const ADMIN_PASSWORD = process.env.BOOTSTRAP_ADMIN_PASSWORD;
+
+const USERS_SHEET        = 'Users';
+const USERS_HEADERS      = ['Login ID', 'Identifier', 'Password', 'Role', 'Status', 'Last Login', 'Sheet Access', 'Created At'];
+const ACTIVITY_SHEET     = 'ActivityLog';
+const ACTIVITY_HEADERS   = ['Action', 'User', 'Details', 'Timestamp'];
 
 const bootstrap = async () => {
   console.log('🚀 Starting SheetSync Pro Bootstrap...');
 
-  try {
-    // 1. Ensure core sheets exist
-    await sheetsAPI.ensureSheetExists('Users', [
-      'Login ID', 'Identifier', 'Password', 'Role', 'Status', 'Last Login', 'Sheet Access', 'Created At'
-    ]);
-    await sheetsAPI.ensureSheetExists('ActivityLog', [
-      'Action', 'User', 'Details', 'Timestamp'
-    ]);
+  if (!ADMIN_PASSWORD) {
+    console.error('❌ BOOTSTRAP_ADMIN_PASSWORD is not set in .env. Aborting.');
+    process.exit(1);
+  }
 
-    // Ensure category sheets exist (Optional but recommended)
-    const categories = ['Japa', 'Elderly Care', 'Patient Care', 'Newborn Baby Care', 'Cook', 'Driver', 'Maid / Housekeeping'];
-    const candidateHeaders = [
-      'Sr No', 'Name', 'Address', 'State', 'Marital Status', 'Timing', 'Area', 'Experience', 'Education', 'DOB', 'Age', 'Gender', 'Salary', 'Mobile', 'Verification', 'Description', 'Since'
-    ];
-    for (const cat of categories) {
-      await sheetsAPI.ensureSheetExists(cat, candidateHeaders);
+  try {
+    // Ensure only these two sheets exist — all other sheets are created by the user via the app
+    await sheetsAPI.ensureSheetExists(USERS_SHEET, USERS_HEADERS);
+    await sheetsAPI.ensureSheetExists(ACTIVITY_SHEET, ACTIVITY_HEADERS);
+
+    // Read existing rows to check if an admin is already present
+    // Uses full dynamic range — no hardcoded column count
+    let rows = [];
+    try {
+      rows = await sheetsAPI.getSheetData(`${USERS_SHEET}!A:Z`);
+    } catch {
+      // Sheet was just created — no rows yet
     }
 
-    // 2. Create initial Admin if not exists
-    const usersData = await sheetsAPI.getSheetData('Users!A:B');
-    const userExists = usersData.some(row => row[1] === ADMIN_EMAIL);
+    // Map headers dynamically so column order doesn't matter
+    const headers = rows[0] || USERS_HEADERS;
+    const loginIdCol  = headers.findIndex(h => /login.?id/i.test(h));
+    const identifierCol = headers.findIndex(h => /identifier|email/i.test(h));
 
-    if (!userExists) {
-      console.log(`Creating initial admin: ${ADMIN_EMAIL}`);
+    const adminExists = rows.slice(1).some(row =>
+      (identifierCol >= 0 && row[identifierCol] === ADMIN_EMAIL) ||
+      (loginIdCol    >= 0 && row[loginIdCol]    === ADMIN_LOGIN_ID)
+    );
+
+    if (!adminExists) {
+      console.log(`Creating initial super admin: ${ADMIN_EMAIL} (login: ${ADMIN_LOGIN_ID})`);
       const hashedPassword = await hashPassword(ADMIN_PASSWORD);
-      const row = [
-        'sheetsync_admin01',
-        ADMIN_EMAIL,
-        hashedPassword,
-        'Super Admin',
-        'active',
-        '',
-        JSON.stringify(['All']),
-        new Date().toISOString()
-      ];
-      await sheetsAPI.appendRow('Users!A:H', row);
-      console.log('✅ Admin created successfully!');
+
+      // Build row aligned to actual header order
+      const rowMap = {
+        'Login ID':     ADMIN_LOGIN_ID,
+        'Identifier':   ADMIN_EMAIL,
+        'Password':     hashedPassword,
+        'Role':         'super_admin',
+        'Status':       'active',
+        'Last Login':   '',
+        'Sheet Access': JSON.stringify(['All']),
+        'Created At':   new Date().toISOString(),
+      };
+      const row = headers.map(h => rowMap[h] ?? '');
+
+      await sheetsAPI.appendRow(`${USERS_SHEET}!A:A`, row);
+      console.log('✅ Super admin created successfully!');
+      console.log(`   Login ID : ${ADMIN_LOGIN_ID}`);
+      console.log(`   Email    : ${ADMIN_EMAIL}`);
+      console.log('   Password : (as set in BOOTSTRAP_ADMIN_PASSWORD)');
     } else {
-      console.log('ℹ️ Admin user already exists.');
+      console.log('ℹ️  Super admin already exists — skipping creation.');
     }
 
     console.log('🎉 Bootstrap complete! You can now log in.');

@@ -33,12 +33,6 @@ app.use((req, res, next) => {
   }
 
   req.cookies = list;
-  
-  // Debug log for cookie names (not values)
-  if (Object.keys(list).length > 0) {
-    console.log(`[Server] Received cookies: ${Object.keys(list).join(', ')}`);
-  }
-  
   next();
 });
 
@@ -112,21 +106,21 @@ app.use(['/api/import', '/import'], importLimiter);
 app.use(['/api/ai-search', '/ai-search'], aiLimiter);
 app.use(['/api/bulk-import', '/bulk-import'], importLimiter);
 
-// Fixed CORS (Restricted for production)
+// CORS — allow local dev, explicitly configured origin, and Vercel preview deployments
+const allowedOrigins = new Set(
+  [ALLOWED_ORIGIN, process.env.FRONTEND_URL].filter(Boolean)
+);
 const corsOptions = {
   origin: (origin, callback) => {
-    const isLocal = !origin || origin.includes('localhost') || origin.includes('127.0.0.1');
-    const isAllowed = origin === ALLOWED_ORIGIN;
-    const isVercelDomain = origin && origin.endsWith('.vercel.app');
-    
-    if (isLocal || isAllowed || (process.env.VERCEL === '1' && isVercelDomain)) {
-      callback(null, true);
-    } else {
-      callback(new Error('CORS Policy Blocked: Unauthorized Origin'));
-    }
+    if (!origin) return callback(null, true); // same-origin / non-browser
+    const isLocal = origin.includes('localhost') || origin.includes('127.0.0.1');
+    const isAllowed = allowedOrigins.has(origin);
+    const isVercel = origin.endsWith('.vercel.app');
+    if (isLocal || isAllowed || isVercel) return callback(null, true);
+    callback(new Error(`CORS: origin ${origin} not allowed`));
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  credentials: true
+  credentials: true,
 };
 
 app.use(cors(corsOptions));
@@ -170,12 +164,39 @@ app.use((err, req, res, next) => {
   });
 });
 
+// Auto-seed: create default super admin if no super_admin exists in DB
+async function ensureSuperAdmin() {
+  try {
+    const { default: bcrypt } = await import('bcryptjs');
+    const existing = await prisma.user.findFirst({ where: { role: 'super_admin' } });
+    if (existing) return;
+    const password = process.env.SEED_ADMIN_PASSWORD || 'Admin@123456';
+    const email    = process.env.SEED_ADMIN_EMAIL    || 'admin@sheetsync.pro';
+    const hash = await bcrypt.hash(password, 12);
+    await prisma.user.create({
+      data: {
+        login_id: 'superadmin_root', name: 'Super Admin',
+        identifier: email, password: hash,
+        role: 'super_admin', plan: 'pro', status: 'active',
+        max_user_quota: 9999, created_by: 'system',
+      }
+    });
+    console.log(`[Seed] Super Admin created — email: ${email}  password: ${password}`);
+    console.log('[Seed] ⚠️  Change the password immediately after first login!');
+  } catch (e) {
+    console.error('[Seed] Failed to ensure super admin:', e.message);
+  }
+}
+
 // Start Server (only if not running in a Vercel serverless environment)
 let server;
 if (process.env.NODE_ENV !== 'production' || process.env.VERCEL !== '1') {
   server = app.listen(PORT, async () => {
     console.log(`🚀 Server is running on http://localhost:${PORT}`);
-    
+
+    // Ensure at least one super admin exists so login is always possible
+    await ensureSuperAdmin();
+
     // Initialize primary sheets in registry
     await db.autoRegisterPrimarySheets();
     
