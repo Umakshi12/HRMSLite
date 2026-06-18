@@ -188,18 +188,24 @@ async function ensureSuperAdmin() {
   }
 }
 
+// ── Module-level initialization (runs on both local and Vercel cold starts) ──
+// ensureSuperAdmin must NOT be inside app.listen() because Vercel serverless
+// never calls listen() — the app is exported directly as a handler.
+(async () => {
+  try {
+    await ensureSuperAdmin();
+    await db.autoRegisterPrimarySheets();
+  } catch (e) {
+    console.error('[Init] Startup initialization failed:', e.message);
+  }
+})();
+
 // Start Server (only if not running in a Vercel serverless environment)
 let server;
 if (process.env.NODE_ENV !== 'production' || process.env.VERCEL !== '1') {
   server = app.listen(PORT, async () => {
     console.log(`🚀 Server is running on http://localhost:${PORT}`);
 
-    // Ensure at least one super admin exists so login is always possible
-    await ensureSuperAdmin();
-
-    // Initialize primary sheets in registry
-    await db.autoRegisterPrimarySheets();
-    
     // Start background sync locally every 15 minutes
     const SYNC_INTERVAL = 15 * 60 * 1000;
     setInterval(async () => {
