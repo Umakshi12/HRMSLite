@@ -5,7 +5,7 @@ import { loginSchema } from '../lib/schemas'
 import { login, forgotPassword } from '../lib/api'
 import useStore from '../lib/store'
 import { toast } from 'sonner'
-import { Lock, Mail, ArrowRight, Users, X, Send } from 'lucide-react'
+import { Lock, Mail, ArrowRight, Users, X, Send, Eye, EyeOff } from 'lucide-react'
 
 function ForgotPasswordModal({ onClose }) {
   const [identifier, setIdentifier] = useState('')
@@ -105,6 +105,7 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false)
   const [attempts, setAttempts] = useState(0)
   const [showForgot, setShowForgot] = useState(false)
+  const [showPassword, setShowPassword] = useState(false)
 
   const { register, handleSubmit, formState: { errors } } = useForm({
     resolver: zodResolver(loginSchema),
@@ -183,10 +184,17 @@ export default function LoginPage() {
               <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
               <input
                 {...register('password')}
-                type="password"
+                type={showPassword ? "text" : "password"}
                 placeholder="••••••••"
-                className="w-full pl-10 pr-4 py-3 border-[1.5px] border-slate-200 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none transition"
+                className="w-full pl-10 pr-10 py-3 border-[1.5px] border-slate-200 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none transition"
               />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition"
+              >
+                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
             </div>
             {errors.password && <p className="text-xs text-red-500 mt-1">{errors.password.message}</p>}
           </div>
