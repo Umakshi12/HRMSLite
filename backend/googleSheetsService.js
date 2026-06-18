@@ -31,7 +31,9 @@ const quoteSheetName = (sheetName) => {
   const name = String(sheetName || '').trim();
   if (!name) return name;
   if (name.startsWith("'") && name.endsWith("'")) return name;
-  return `'${name.replace(/'/g, "''")}'`;
+  // Only quote if the name contains spaces or special characters
+  if (/[\s!'"()]/.test(name)) return `'${name.replace(/'/g, "''")}'`;
+  return name;
 };
 
 const normalizeRange = (range) => {
