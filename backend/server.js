@@ -168,15 +168,16 @@ app.use((err, req, res, next) => {
 async function ensureSuperAdmin() {
   try {
     const { default: bcrypt } = await import('bcryptjs');
-    const email = process.env.BOOTSTRAP_ADMIN_EMAIL || 'admin@sheetsync.pro';
+    const email = process.env.BOOTSTRAP_ADMIN_EMAIL || 'superadmin@sheetsync.pro';
+    const loginId = process.env.BOOTSTRAP_ADMIN_LOGIN_ID || 'superadmin_root';
     const password = process.env.BOOTSTRAP_ADMIN_PASSWORD || 'Admin@123456';
     const hash = await bcrypt.hash(password, 12);
 
     await prisma.user.upsert({
       where: { identifier: email },
-      update: { password: hash },
+      update: { password: hash, login_id: loginId },
       create: {
-        login_id: 'superadmin_root',
+        login_id: loginId,
         name: 'Super Admin',
         identifier: email,
         password: hash,
