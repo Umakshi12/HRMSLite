@@ -408,9 +408,9 @@ class ProductionDatabase {
   async _syncUserToSheet(user) {
     try {
       const spreadsheetId = process.env.SPREADSHEET_ID;
-      await sheetsAPI.ensureSheetExists(db.USERS_TAB, db.USER_HEADERS, spreadsheetId);
-      const rows = await sheetsAPI.getSheetDataFull(db.USERS_TAB, spreadsheetId);
-      const headers = rows[0] || db.USER_HEADERS;
+      await sheetsAPI.ensureSheetExists(ProductionDatabase.USERS_TAB, ProductionDatabase.USER_HEADERS, spreadsheetId);
+      const rows = await sheetsAPI.getSheetDataFull(ProductionDatabase.USERS_TAB, spreadsheetId);
+      const headers = rows[0] || ProductionDatabase.USER_HEADERS;
       const loginIdCol = headers.findIndex(h => /login.?id/i.test(h));
 
       const existingIdx = rows.findIndex((r, i) => i > 0 && r[loginIdCol] === user.login_id);
@@ -432,9 +432,9 @@ class ProductionDatabase {
       const row = headers.map(h => rowMap[h] ?? '');
 
       if (existingIdx === -1) {
-        await sheetsAPI.appendRow(`${db.USERS_TAB}!A:A`, row, spreadsheetId);
+        await sheetsAPI.appendRow(`${ProductionDatabase.USERS_TAB}!A:A`, row, spreadsheetId);
       } else {
-        await sheetsAPI.updateRow(db.USERS_TAB, existingIdx, row, spreadsheetId);
+        await sheetsAPI.updateRow(ProductionDatabase.USERS_TAB, existingIdx, row, spreadsheetId);
       }
     } catch (err) {
       console.warn('[SheetSync] Failed to sync user to sheet:', err.message);
@@ -445,8 +445,8 @@ class ProductionDatabase {
   async _appendActivityToSheet(action, actor, details) {
     try {
       const spreadsheetId = process.env.SPREADSHEET_ID;
-      await sheetsAPI.ensureSheetExists(db.ACTIVITY_TAB, db.ACTIVITY_HEADERS, spreadsheetId);
-      await sheetsAPI.appendRow(`${db.ACTIVITY_TAB}!A:D`, [action, actor || 'system', details || '', new Date().toISOString()], spreadsheetId);
+      await sheetsAPI.ensureSheetExists(ProductionDatabase.ACTIVITY_TAB, ProductionDatabase.ACTIVITY_HEADERS, spreadsheetId);
+      await sheetsAPI.appendRow(`${ProductionDatabase.ACTIVITY_TAB}!A:D`, [action, actor || 'system', details || '', new Date().toISOString()], spreadsheetId);
     } catch (err) {
       console.warn('[SheetSync] Failed to append activity log:', err.message);
     }
