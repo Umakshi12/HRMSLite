@@ -840,14 +840,19 @@ router.post('/send-credentials', requireAuth, isAdminOrSuper, asyncHandler(async
   // Default: email via SMTP
   try {
     const { sendWelcomeEmail } = await import('./emailService.js');
-    await sendWelcomeEmail(
+    const result = await sendWelcomeEmail(
       targetUser.identifier,
       targetUser.login_id,
       reset.new_password,
+      targetUser.name || '',
     );
-    return res.json({ success: true, channel: 'email' });
+    if (result.mock) {
+      console.log(`[send-credentials] Mock mode — credentials logged to console for ${targetUser.login_id}`);
+    }
+    return res.json({ success: true, channel: 'email', mock: result.mock || false });
   } catch (e) {
-    return res.status(500).json({ success: false, message: 'Communication failed' });
+    console.error('[send-credentials] Email failed:', e.message);
+    return res.status(500).json({ success: false, message: `Email delivery failed: ${e.message}` });
   }
 }));
 

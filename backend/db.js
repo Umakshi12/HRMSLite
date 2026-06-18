@@ -539,6 +539,8 @@ class ProductionDatabase {
       login_id: user.login_id,
       role: user.role,
       identifier: user.identifier,
+      name: user.name || '',
+      phone: user.phone || '',
       sheet_access: user.tabAccess.map(a => a.tab_name)
     };
   }
