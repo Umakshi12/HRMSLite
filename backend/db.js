@@ -397,6 +397,61 @@ class ProductionDatabase {
     return candidate;
   }
 
+  // ── Google Sheet user sync helpers ──
+  static AUTH_SHEET      = 'HRMS_auth_data';
+  static USERS_TAB       = 'Users';
+  static ACTIVITY_TAB    = 'ActivityLog';
+  static USER_HEADERS    = ['Login ID', 'Identifier', 'Password', 'Role', 'Status', 'Name', 'Phone', 'Created By', 'Created At', 'Last Login', 'Sheet Access'];
+  static ACTIVITY_HEADERS = ['Action', 'Actor', 'Details', 'Timestamp'];
+
+  /** Upsert one user row in the HRMS_auth_data > Users tab */
+  async _syncUserToSheet(user) {
+    try {
+      const spreadsheetId = process.env.SPREADSHEET_ID;
+      await sheetsAPI.ensureSheetExists(db.USERS_TAB, db.USER_HEADERS, spreadsheetId);
+      const rows = await sheetsAPI.getSheetDataFull(db.USERS_TAB, spreadsheetId);
+      const headers = rows[0] || db.USER_HEADERS;
+      const loginIdCol = headers.findIndex(h => /login.?id/i.test(h));
+
+      const existingIdx = rows.findIndex((r, i) => i > 0 && r[loginIdCol] === user.login_id);
+      const sheetAccess = Array.isArray(user.sheet_access) ? JSON.stringify(user.sheet_access) : (user.sheet_access || '[]');
+
+      const rowMap = {
+        'Login ID':    user.login_id,
+        'Identifier':  user.identifier || '',
+        'Password':    user.password_hash || '',
+        'Role':        user.role || 'user',
+        'Status':      user.status || 'active',
+        'Name':        user.name || '',
+        'Phone':       user.phone || '',
+        'Created By':  user.created_by || '',
+        'Created At':  user.created_at ? new Date(user.created_at).toISOString() : new Date().toISOString(),
+        'Last Login':  user.last_login ? new Date(user.last_login).toISOString() : '',
+        'Sheet Access': sheetAccess,
+      };
+      const row = headers.map(h => rowMap[h] ?? '');
+
+      if (existingIdx === -1) {
+        await sheetsAPI.appendRow(`${db.USERS_TAB}!A:A`, row, spreadsheetId);
+      } else {
+        await sheetsAPI.updateRow(db.USERS_TAB, existingIdx, row, spreadsheetId);
+      }
+    } catch (err) {
+      console.warn('[SheetSync] Failed to sync user to sheet:', err.message);
+    }
+  }
+
+  /** Append one row to the HRMS_auth_data > ActivityLog tab */
+  async _appendActivityToSheet(action, actor, details) {
+    try {
+      const spreadsheetId = process.env.SPREADSHEET_ID;
+      await sheetsAPI.ensureSheetExists(db.ACTIVITY_TAB, db.ACTIVITY_HEADERS, spreadsheetId);
+      await sheetsAPI.appendRow(`${db.ACTIVITY_TAB}!A:D`, [action, actor || 'system', details || '', new Date().toISOString()], spreadsheetId);
+    } catch (err) {
+      console.warn('[SheetSync] Failed to append activity log:', err.message);
+    }
+  }
+
   async grantAccess(data) {
     if (!data.name || !data.name.trim()) {
       return { success: false, message: 'Name is required to create a user.' };
@@ -464,12 +519,26 @@ class ProductionDatabase {
 
       cache.invalidate(/^sheet-names-/);
       await this.logActivity({ action: 'GRANT_ACCESS', actor: data.created_by || 'Admin', details: `Created ${normalizedRole} account for ${data.identifier}` });
-      
-      return { 
-        success: true, 
-        login_id: newLoginId, 
-        password: tempPassword, 
-        message: emailSent ? 'Access granted and welcome email sent.' : 'Access granted. Welcome message sent.' 
+
+      // Sync new user to HRMS_auth_data Google Sheet (fire-and-forget)
+      this._syncUserToSheet({
+        login_id: newLoginId,
+        identifier: data.identifier,
+        password_hash: hashedPassword,
+        role: normalizedRole,
+        status: 'active',
+        name: data.name || '',
+        phone: data.phone || '',
+        created_by: data.created_by || 'Admin',
+        sheet_access: data.sheet_access || [],
+      }).catch(() => {});
+      this._appendActivityToSheet('GRANT_ACCESS', data.created_by || 'Admin', `Created ${normalizedRole} account for ${data.identifier}`).catch(() => {});
+
+      return {
+        success: true,
+        login_id: newLoginId,
+        password: tempPassword,
+        message: emailSent ? 'Access granted and welcome email sent.' : 'Access granted. Welcome message sent.'
       };
     } catch (err) {
       console.error('Grant Access Error:', err);
@@ -596,6 +665,13 @@ class ProductionDatabase {
         details: `Updated profile for ${target_login_id}`
       });
 
+      // Sync updated user to Google Sheet
+      const updatedUser = await prisma.user.findUnique({ where: { login_id: target_login_id }, include: { tabAccess: true } });
+      if (updatedUser) {
+        this._syncUserToSheet({ ...updatedUser, password_hash: updatedUser.password, sheet_access: updatedUser.tabAccess.map(a => a.tab_name) }).catch(() => {});
+      }
+      this._appendActivityToSheet('UPDATE_PROFILE', updated_by, `Updated profile for ${target_login_id}`).catch(() => {});
+
       return { success: true };
     } catch (err) {
       return { success: false, message: err.message };
@@ -641,6 +717,13 @@ class ProductionDatabase {
         details: `Updated rights/profile for ${target_login_id}`
       });
 
+      // Sync updated user to Google Sheet
+      const updatedUser = await prisma.user.findUnique({ where: { login_id: target_login_id }, include: { tabAccess: true } });
+      if (updatedUser) {
+        this._syncUserToSheet({ ...updatedUser, password_hash: updatedUser.password, sheet_access: updatedUser.tabAccess.map(a => a.tab_name) }).catch(() => {});
+      }
+      this._appendActivityToSheet('UPDATE_RIGHTS', updated_by, `Updated rights/profile for ${target_login_id}`).catch(() => {});
+
       return { success: true };
     } catch (err) {
       return { success: false, message: err.message };
@@ -667,6 +750,10 @@ class ProductionDatabase {
         actor: removed_by,
         details: `Removed user ${target_login_id}`
       });
+
+      // Mark user as removed in Google Sheet (status = 'removed')
+      this._syncUserToSheet({ login_id: target_login_id, status: 'removed', role: '', identifier: '', name: '', phone: '', created_by: '', sheet_access: [] }).catch(() => {});
+      this._appendActivityToSheet('REMOVE_USER', removed_by, `Removed user ${target_login_id}`).catch(() => {});
 
       return { success: true };
     } catch (err) {
@@ -883,20 +970,39 @@ class ProductionDatabase {
     } catch (err) {
       // Never crash the main flow due to audit failure
       console.warn('logActivity (Prisma) warning:', err.message);
-      // Fallback: try Google Sheet log
-      try {
-        await sheetsAPI.ensureSheetExists('ActivityLog', ['Action', 'User', 'Details', 'Timestamp']);
-        await sheetsAPI.appendRow('ActivityLog!A:D', [action, actor || 'system', details || '', new Date().toISOString()]);
-      } catch (_) { /* silent */ }
     }
+    // Always mirror to Google Sheet ActivityLog (fire-and-forget)
+    this._appendActivityToSheet(action, actor, details).catch(() => {});
   }
 
   async getActivityLog(page = 1, limit = 50) {
-    const rows = await sheetsAPI.getSheetData('ActivityLog!A:D');
-    const allLogs = sheetsAPI.rowsToObjects(rows);
-    const total = allLogs.length;
-    const start = (page - 1) * limit;
-    return { total, logs: allLogs.slice(start, start + limit).reverse() };
+    // Read from Prisma first (authoritative); fall back to Google Sheet
+    try {
+      const total = await prisma.auditLog.count();
+      const start = (page - 1) * limit;
+      const logs = await prisma.auditLog.findMany({
+        orderBy: { created_at: 'desc' },
+        skip: start,
+        take: limit,
+        select: { action_type: true, actor_name: true, metadata: true, created_at: true, target_tab_name: true }
+      });
+      return {
+        total,
+        logs: logs.map(l => ({
+          Action: l.action_type,
+          User: l.actor_name,
+          Details: l.metadata?.details || '',
+          Timestamp: l.created_at?.toISOString() || '',
+          Tab: l.target_tab_name || '',
+        }))
+      };
+    } catch {
+      const rows = await sheetsAPI.getSheetData('ActivityLog!A:D');
+      const allLogs = sheetsAPI.rowsToObjects(rows);
+      const total = allLogs.length;
+      const start = (page - 1) * limit;
+      return { total, logs: allLogs.slice(start, start + limit).reverse() };
+    }
   }
 
   // ── Smart Search — searches ALL row keys dynamically (no hardcoded fields) ──
@@ -1393,6 +1499,14 @@ class ProductionDatabase {
       actor: reset_by,
       details: `Password reset for ${target_login_id}`
     });
+
+    // Sync updated password hash to Google Sheet
+    const updatedUser = await prisma.user.findUnique({ where: { login_id: target_login_id }, include: { tabAccess: true } });
+    if (updatedUser) {
+      this._syncUserToSheet({ ...updatedUser, password_hash: hashedPassword, sheet_access: updatedUser.tabAccess.map(a => a.tab_name) }).catch(() => {});
+    }
+    this._appendActivityToSheet('PASSWORD_RESET', reset_by, `Password reset for ${target_login_id}`).catch(() => {});
+
     return { success: true, new_password };
   }
 
