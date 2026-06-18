@@ -284,6 +284,7 @@ export default function CandidateTable({ onEdit }) {
 
   const columns = useMemo(() => {
     let baseHeaders = [];
+    let shouldSortByPriority = false;
     if (activeTabColumns && activeTabColumns.length > 0) {
       baseHeaders = activeTabColumns;
     } else if (dynamicSheet && dynamicSheet.columns && dynamicSheet.columns.length > 0) {
@@ -294,6 +295,7 @@ export default function CandidateTable({ onEdit }) {
     } else {
       // Fallback
       baseHeaders = ['Sr.', 'Name', 'Mobile No', 'Address', 'State', 'Area', 'Experience', 'Education', 'DOB', 'Age', 'Gender', 'Salary', 'Verification', 'Description', 'Since', 'Added By', 'Last Updated'];
+      shouldSortByPriority = true;
     }
 
     const normalizeHeader = (h) => String(h || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
@@ -406,8 +408,10 @@ export default function CandidateTable({ onEdit }) {
       };
     });
 
-    // Ensure columns are ordered by priority
-    generatedCols.sort((a, b) => getColPriority(a.accessorKey) - getColPriority(b.accessorKey));
+    // Ensure columns are ordered by priority only if fallback is used
+    if (shouldSortByPriority) {
+      generatedCols.sort((a, b) => getColPriority(a.accessorKey) - getColPriority(b.accessorKey));
+    }
 
     return [
       ...generatedCols,
