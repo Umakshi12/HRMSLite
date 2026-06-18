@@ -168,21 +168,26 @@ app.use((err, req, res, next) => {
 async function ensureSuperAdmin() {
   try {
     const { default: bcrypt } = await import('bcryptjs');
-    const existing = await prisma.user.findFirst({ where: { role: 'super_admin' } });
-    if (existing) return;
-    const password = process.env.SEED_ADMIN_PASSWORD || 'Admin@123456';
-    const email    = process.env.SEED_ADMIN_EMAIL    || 'admin@sheetsync.pro';
+    const email = process.env.BOOTSTRAP_ADMIN_EMAIL || 'admin@sheetsync.pro';
+    const password = process.env.BOOTSTRAP_ADMIN_PASSWORD || 'Admin@123456';
     const hash = await bcrypt.hash(password, 12);
-    await prisma.user.create({
-      data: {
-        login_id: 'superadmin_root', name: 'Super Admin',
-        identifier: email, password: hash,
-        role: 'super_admin', plan: 'pro', status: 'active',
-        max_user_quota: 9999, created_by: 'system',
+
+    await prisma.user.upsert({
+      where: { identifier: email },
+      update: { password: hash },
+      create: {
+        login_id: 'superadmin_root',
+        name: 'Super Admin',
+        identifier: email,
+        password: hash,
+        role: 'super_admin',
+        plan: 'pro',
+        status: 'active',
+        max_user_quota: 9999,
+        created_by: 'system',
       }
     });
-    console.log(`[Seed] Super Admin created — email: ${email}  password: ${password}`);
-    console.log('[Seed] ⚠️  Change the password immediately after first login!');
+    console.log(`[Seed] Super Admin ensured — email: ${email}`);
   } catch (e) {
     console.error('[Seed] Failed to ensure super admin:', e.message);
   }

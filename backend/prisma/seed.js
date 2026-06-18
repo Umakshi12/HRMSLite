@@ -2,9 +2,12 @@
  * Prisma Seed — SheetSync Pro
  * Run: npm run db:seed
  *
- * Creates the default Super Admin account if it doesn't exist yet.
- * Credentials: admin@sheetsync.pro / Admin@123456
- * CHANGE THE PASSWORD immediately after first login.
+ * Upserts the Super Admin — safe to run multiple times.
+ * Reads credentials from env vars (same ones as server.js bootstrap).
+ * Set in Vercel → Settings → Environment Variables:
+ *   BOOTSTRAP_ADMIN_EMAIL    = superadmin@sheetsync.pro
+ *   BOOTSTRAP_ADMIN_LOGIN_ID = sheetsync_superadmin
+ *   BOOTSTRAP_ADMIN_PASSWORD = <your-password>
  */
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
@@ -12,25 +15,22 @@ import bcrypt from 'bcryptjs';
 const prisma = new PrismaClient();
 
 async function main() {
-  const SUPER_ADMIN_EMAIL = process.env.SEED_ADMIN_EMAIL || 'admin@sheetsync.pro';
-  const SUPER_ADMIN_PASSWORD = process.env.SEED_ADMIN_PASSWORD || 'Admin@123456';
+  // Single source of truth — same vars used in server.js ensureSuperAdmin()
+  const email    = process.env.BOOTSTRAP_ADMIN_EMAIL    || 'superadmin@sheetsync.pro';
+  const loginId  = process.env.BOOTSTRAP_ADMIN_LOGIN_ID || 'superadmin_root';
+  const password = process.env.BOOTSTRAP_ADMIN_PASSWORD || 'Admin@123456';
 
-  const existing = await prisma.user.findUnique({ where: { identifier: SUPER_ADMIN_EMAIL } });
+  const hash = await bcrypt.hash(password, 12);
 
-  if (existing) {
-    console.log(`[Seed] Super Admin already exists: ${SUPER_ADMIN_EMAIL}`);
-    return;
-  }
-
-  const hashedPassword = await bcrypt.hash(SUPER_ADMIN_PASSWORD, 12);
-
-  const admin = await prisma.user.create({
-    data: {
-      login_id:       'superadmin_root',
+  await prisma.user.upsert({
+    where: { identifier: email },
+    update: { password: hash, login_id: loginId },
+    create: {
+      login_id:       loginId,
       name:           'Super Admin',
-      identifier:     SUPER_ADMIN_EMAIL,
+      identifier:     email,
       phone:          null,
-      password:       hashedPassword,
+      password:       hash,
       role:           'super_admin',
       plan:           'pro',
       status:         'active',
@@ -40,10 +40,8 @@ async function main() {
     },
   });
 
-  console.log(`[Seed] Created Super Admin:`);
-  console.log(`  Login ID : ${admin.login_id}`);
-  console.log(`  Email    : ${admin.identifier}`);
-  console.log(`  Password : ${SUPER_ADMIN_PASSWORD}  ← CHANGE THIS IMMEDIATELY`);
+  console.log(`[Seed] ✅ Super Admin upserted — login_id: ${loginId}  email: ${email}`);
+  console.log('[Seed] ⚠️  Change the password immediately after first login!');
 }
 
 main()
