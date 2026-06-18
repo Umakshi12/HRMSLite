@@ -30,6 +30,7 @@ const sanitizeValues = (values) => {
 const quoteSheetName = (sheetName) => {
   const name = String(sheetName || '').trim();
   if (!name) return name;
+  if (/[\n\r\t]/.test(name)) throw new Error(`Invalid sheet name contains control characters: ${JSON.stringify(name)}`);
   if (name.startsWith("'") && name.endsWith("'")) return name;
   // Only quote if the name contains spaces or special characters
   if (/[\s!'"()]/.test(name)) return `'${name.replace(/'/g, "''")}'`;

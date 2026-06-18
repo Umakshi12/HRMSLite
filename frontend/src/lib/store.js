@@ -11,7 +11,7 @@ const useStore = create((set, get) => ({
   },
 
   // ── Active Sheet ──
-  activeSheet: 'Japa',
+  activeSheet: null,
   setActiveSheet: (sheet) => set({ activeSheet: sheet }),
 
   // ── Search ──
@@ -32,7 +32,7 @@ const useStore = create((set, get) => ({
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
 
   // ── Column Preferences (persisted) ──
-  columnVisibility: JSON.parse(localStorage.getItem('sheetsync_cols') || '{}'),
+  columnVisibility: (() => { try { return JSON.parse(localStorage.getItem('sheetsync_cols') || '{}') } catch { return {} } })(),
   setColumnVisibility: (vis) => {
     localStorage.setItem('sheetsync_cols', JSON.stringify(vis))
     set({ columnVisibility: vis })

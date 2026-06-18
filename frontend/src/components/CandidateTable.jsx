@@ -220,7 +220,7 @@ export default function CandidateTable({ onEdit }) {
 
   // Tabs for this spreadsheet (only shown when > 1 tab)
   const sheetTabs = useMemo(() => {
-    if (!dynamicSheet?.tabs || dynamicSheet.tabs.length <= 1) return [];
+    if (!dynamicSheet?.tabs?.length || dynamicSheet.tabs.length <= 1) return [];
     return dynamicSheet.tabs.filter(t => !t.deleted_at);
   }, [dynamicSheet]);
 

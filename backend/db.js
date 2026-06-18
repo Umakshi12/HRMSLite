@@ -585,7 +585,7 @@ class ProductionDatabase {
       }
 
       // Bust the target user's sheet-summary and sheet-names caches so they see updated access
-      cache.invalidate(new RegExp(`sheet-summary-${target_login_id}`));
+      cache.invalidate(new RegExp(`^sheet-summary-${target_login_id}$`));
       cache.invalidate(/^sheet-names-/);
 
       await this.logActivity({
