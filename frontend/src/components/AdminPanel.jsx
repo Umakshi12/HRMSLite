@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { grantAccessSchema } from '../lib/schemas'
-import { getUsers, grantAccess, resetPassword, removeUser, getSpreadsheets, updateUserRights, updateUserLimit, getAdminDashboard, apiFetch, sanitizeObject } from '../lib/api'
+import { getUsers, grantAccess, resetPassword, removeUser, getSpreadsheets, updateUserRights, updateUserLimit, getAdminDashboard, getSheetSummary, apiFetch, sanitizeObject } from '../lib/api'
 import useStore from '../lib/store'
 import { toast } from 'sonner'
 import { UserPlus, Key, Trash2, ShieldCheck, Edit2, Check, X, ShieldAlert, Send, ToggleLeft, ToggleRight, Database, Lock, Globe } from 'lucide-react'
@@ -28,15 +28,28 @@ export default function AdminPanel() {
   const [confirmToggle, setConfirmToggle]   = useState(null)
   const [togglingAccess, setTogglingAccess] = useState({}) // { loginId_sheet: true }
 
-  // Get ALL spreadsheets (admins need to see all to grant access)
+  // Get ALL spreadsheets (super admin sees all; admin sees only their granted sheets)
   const { data: spreadsheetsData } = useQuery({
     queryKey: ['spreadsheets'],
     queryFn: getSpreadsheets,
     placeholderData: [],
   })
-  const sheets = Array.isArray(spreadsheetsData)
+  const allSheets = Array.isArray(spreadsheetsData)
     ? spreadsheetsData.filter(s => s.is_active).map(s => s.name)
     : []
+
+  // For admins: limit grantable sheets to only those they have access to
+  const { data: mySummary } = useQuery({
+    queryKey: ['sheet-summary'],
+    queryFn: getSheetSummary,
+    enabled: !isSuperAdmin,
+    placeholderData: { sheets: [] },
+  })
+  const mySheets = isSuperAdmin
+    ? allSheets
+    : (mySummary?.sheets || []).map(s => s.name)
+
+  const sheets = mySheets
 
   const { data: usersData, isLoading } = useQuery({
     queryKey: ['users'],
@@ -126,6 +139,11 @@ export default function AdminPanel() {
     const key = `${targetUser.login_id}_${sheet}`
     if (togglingAccess[key]) return
     const hasAccess = (targetUser.sheet_access || []).includes(sheet)
+    // Admins cannot grant sheets outside their own access
+    if (!isSuperAdmin && !hasAccess && !mySheets.includes(sheet)) {
+      toast.error(`You don't have access to "${sheet}". You can only grant sheets you have access to.`)
+      return
+    }
     const updated = hasAccess
       ? (targetUser.sheet_access || []).filter(s => s !== sheet)
       : [...(targetUser.sheet_access || []), sheet]
@@ -209,19 +227,6 @@ export default function AdminPanel() {
           </p>
         </div>
         <div className="flex items-center gap-4">
-          {isAdmin && (
-            oauthStatus?.isLinked ? (
-              <div className="flex items-center gap-2 bg-green-50 border border-green-100 px-3 py-1.5 rounded-lg">
-                <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-                <span className="text-[11px] font-bold text-green-600">Google: {oauthStatus.email}</span>
-              </div>
-            ) : (
-              <a href={`${import.meta.env.VITE_API_URL || 'http://localhost:5000/api'}/auth/google?token=${token}`}
-                className="flex items-center gap-2 bg-slate-800 hover:bg-slate-900 text-white px-4 py-2 rounded-lg text-xs font-bold transition">
-                <ShieldAlert className="w-4 h-4 text-amber-400" />Link Google Account
-              </a>
-            )
-          )}
           <span className={`text-xs font-bold px-3 py-1.5 rounded-full ${isSuperAdmin ? 'bg-purple-100 text-purple-600' : 'bg-blue-100 text-blue-600'}`}>
             {isSuperAdmin ? 'Super Admin' : 'Admin'}
           </span>

@@ -666,6 +666,14 @@ router.post('/grant-access', requireAuth, isAdminOrSuper, asyncHandler(async (re
 
   // SECURITY: Explicitly pick only allowed fields (prevent mass assignment)
   const { identifier, password, name, phone, sheet_access, notes, max_users } = req.body;
+
+  // Admins can only grant sheets they themselves have access to
+  if (callerRole === 'admin' && Array.isArray(sheet_access) && sheet_access.length > 0) {
+    const adminSheets = await db.getCandidateSheets(req.user);
+    const outOfScope = sheet_access.filter(s => !adminSheets.includes(s));
+    if (outOfScope.length > 0)
+      return res.status(403).json({ success: false, message: `You don't have access to: ${outOfScope.join(', ')}. You can only grant sheets you have access to.` });
+  }
   const result = await db.grantAccess({
     identifier,
     password,
@@ -727,6 +735,14 @@ router.put('/update-user-rights', requireAuth, isAdminOrSuper, asyncHandler(asyn
   if (callerRole === 'admin') {
     const ownership = await db.checkUserOwnership(req.user.login_id, req.body.target_login_id);
     if (!ownership) return res.status(403).json({ success: false, message: 'You can only manage your own users' });
+
+    // Admins can only grant sheets they themselves have access to
+    if (Array.isArray(sheet_access) && sheet_access.length > 0) {
+      const adminSheets = await db.getCandidateSheets(req.user);
+      const outOfScope = sheet_access.filter(s => !adminSheets.includes(s));
+      if (outOfScope.length > 0)
+        return res.status(403).json({ success: false, message: `You don't have access to: ${outOfScope.join(', ')}. You can only grant sheets you have access to.` });
+    }
   }
 
   const result = await db.updateUserRights({ target_login_id, name, phone, identifier, role: targetRole, sheet_access, updated_by: req.user?.login_id });
