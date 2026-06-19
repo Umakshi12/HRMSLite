@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from 'react'
 import { useForm } from 'react-hook-form'
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query'
-import { addCandidate, editCandidate, getSheetSummary, getSpreadsheets, sanitizeObject } from '../lib/api'
+import { addCandidate, editCandidate, getSheetSummary, getSpreadsheets, getFilterOptions, sanitizeObject } from '../lib/api'
 import { INDIAN_STATES, EXPERIENCE_OPTIONS, EDUCATION_OPTIONS, TIMING_OPTIONS, MARITAL_OPTIONS, GENDER_OPTIONS, VERIFICATION_OPTIONS } from '../lib/config'
 import useStore from '../lib/store'
 import { toast } from 'sonner'
@@ -16,6 +16,20 @@ export default function CandidateModal({ editData, onClose }) {
   // Get dynamic sheet list
   const { data: summary } = useQuery({ queryKey: ['sheet-summary'], queryFn: getSheetSummary })
   const sheets = summary?.sheets?.length ? summary.sheets.map((s) => s.name) : []
+
+  const targetSheetName = editData?._sheet || editData?.sheet || activeSheet
+  const { data: dynamicOptions } = useQuery({
+    queryKey: ['filter-options', targetSheetName],
+    queryFn: () => getFilterOptions(targetSheetName),
+    enabled: !!targetSheetName,
+  })
+
+  const getColOptions = (colName) => {
+    if (!dynamicOptions) return null
+    const lowerName = String(colName).toLowerCase()
+    const key = Object.keys(dynamicOptions).find(k => k.toLowerCase() === lowerName)
+    return key ? dynamicOptions[key] : null
+  }
 
   const { data: spreadsheets } = useQuery({ queryKey: ['spreadsheets'], queryFn: getSpreadsheets, placeholderData: [] })
 
@@ -172,54 +186,61 @@ export default function CandidateModal({ editData, onClose }) {
 
     // Dropdowns
     if (lower.includes('gender')) {
+      const opts = getColOptions(col) || GENDER_OPTIONS
       return (
         <select {...register(col)} className="field-input">
-          {GENDER_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+          {opts.map((o) => <option key={o} value={o}>{o}</option>)}
         </select>
       )
     }
     if (lower.includes('state')) {
+      const opts = getColOptions(col) || INDIAN_STATES
       return (
         <select {...register(col)} className="field-input">
           <option value="">Select state</option>
-          {INDIAN_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
+          {opts.map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
       )
     }
     if (lower.includes('marital')) {
+      const opts = getColOptions(col) || MARITAL_OPTIONS
       return (
         <select {...register(col)} className="field-input">
           <option value="">Select</option>
-          {MARITAL_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+          {opts.map((o) => <option key={o} value={o}>{o}</option>)}
         </select>
       )
     }
     if (lower.includes('timing') || lower.includes('shift')) {
+      const opts = getColOptions(col) || TIMING_OPTIONS
       return (
         <select {...register(col)} className="field-input">
           <option value="">Select</option>
-          {TIMING_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+          {opts.map((o) => <option key={o} value={o}>{o}</option>)}
         </select>
       )
     }
     if (lower.includes('experience') || lower === 'exp') {
+      const opts = getColOptions(col) || EXPERIENCE_OPTIONS
       return (
         <select {...register(col)} className="field-input">
-          {EXPERIENCE_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+          {opts.map((o) => <option key={o} value={o}>{o}</option>)}
         </select>
       )
     }
     if (lower.includes('education') || lower === 'degree') {
+      const opts = getColOptions(col) || EDUCATION_OPTIONS
       return (
         <select {...register(col)} className="field-input">
-          {EDUCATION_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+          {opts.map((o) => <option key={o} value={o}>{o}</option>)}
         </select>
       )
     }
     if (lower.includes('verification') || lower === 'status') {
+      const opts = getColOptions(col) || VERIFICATION_OPTIONS
       return (
         <select {...register(col)} className="field-input">
-          {VERIFICATION_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+          {opts.map((o) => <option key={o} value={o}>{o}</option>)}
         </select>
       )
     }
@@ -234,8 +255,28 @@ export default function CandidateModal({ editData, onClose }) {
       return <textarea {...register(col)} maxLength={500} rows={3} placeholder="Details..." className="field-input resize-y" />
     }
 
-    // Fallback Input
-    return <input {...register(col)} placeholder={lower.includes('dob') || lower.includes('since') ? "DD-MM-YYYY" : `Enter ${col}`} className="field-input" />
+    // Fallback Input with dynamic datalist dropdown if options exist
+    const opts = getColOptions(col)
+    const hasOpts = opts && opts.length > 0
+    const isDateField = lower.includes('dob') || lower.includes('since') || lower === 'date'
+    
+    return (
+      <div className="relative w-full">
+        <input 
+          {...register(col)} 
+          list={hasOpts ? `datalist-${col}` : undefined}
+          placeholder={isDateField ? "DD-MM-YYYY" : `Enter ${col}`} 
+          className="field-input w-full" 
+        />
+        {hasOpts && (
+          <datalist id={`datalist-${col}`}>
+            {opts.map((opt) => (
+              <option key={opt} value={opt} />
+            ))}
+          </datalist>
+        )}
+      </div>
+    )
   }
 
   // Separate description-like fields to put them at the bottom
