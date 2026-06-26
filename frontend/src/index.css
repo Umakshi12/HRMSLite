@@ -4,7 +4,7 @@
 
 @layer base {
   * { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
-  body { @apply bg-gray-50 text-slate-800 font-sans; }
+  body { @apply bg-gray-50 text-slate-800 font-sans overflow-hidden; }
 }
 
 /* Anti-copy protection */

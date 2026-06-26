@@ -334,7 +334,7 @@ export default function AdminPanel() {
                   No spreadsheets connected yet. Add one in Spreadsheet Manager.
                 </p>
               ) : (
-                <div className="space-y-1.5 max-h-44 overflow-y-auto pr-1">
+                <div className="space-y-1.5">
                   {sheets.map((s) => {
                     const checked = selectedSheets.includes(s)
                     return (
