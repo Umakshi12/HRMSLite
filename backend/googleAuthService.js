@@ -1,10 +1,8 @@
 import { google } from 'googleapis';
-import { PrismaClient } from '@prisma/client';
+import prisma from './prisma/client.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
-
-const prisma = new PrismaClient();
 
 const oauth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_CLIENT_ID,
@@ -41,7 +39,7 @@ export const handleCallback = async (code, ownerLoginId) => {
     google_email: googleEmail,
     access_token: tokens.access_token,
     refresh_token: tokens.refresh_token, // only provided on first auth or with prompt=consent
-    expiry: new DateTime(Date.now() + tokens.expiry_date),
+    expiry: new Date(tokens.expiry_date),
     scope: tokens.scope
   };
 
@@ -61,6 +59,7 @@ export const handleCallback = async (code, ownerLoginId) => {
       google_email: googleEmail,
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token || '',
+      iv: '',
       expiry: new Date(tokens.expiry_date),
       scope: tokens.scope
     }

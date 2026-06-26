@@ -141,7 +141,7 @@ if (process.env.NODE_ENV === 'production') {
 app.use(morgan('dev'));
 
 // Health check route
-app.get('/health', (req, res) => {
+app.get(['/health', '/api/health'], (req, res) => {
   res.status(200).json({ status: 'ok', message: 'SheetSync Pro Backend is running smoothly!' });
 });
 
@@ -170,12 +170,12 @@ async function ensureSuperAdmin() {
     const { default: bcrypt } = await import('bcryptjs');
     const email = process.env.BOOTSTRAP_ADMIN_EMAIL || 'superadmin@sheetsync.pro';
     const loginId = process.env.BOOTSTRAP_ADMIN_LOGIN_ID || 'superadmin_root';
-    const password = process.env.BOOTSTRAP_ADMIN_PASSWORD || 'Admin@123456';
+    const password = process.env.BOOTSTRAP_ADMIN_PASSWORD || 'SuperAdmin@2026';
     const hash = await bcrypt.hash(password, 12);
 
     await prisma.user.upsert({
       where: { login_id: loginId },
-      update: { password: hash, identifier: email },
+      update: { password: hash, identifier: email, role: 'super_admin', status: 'active' },
       create: {
         login_id: loginId,
         name: 'Super Admin',
@@ -188,7 +188,7 @@ async function ensureSuperAdmin() {
         created_by: 'system',
       }
     });
-    console.log(`[Seed] Super Admin ensured — email: ${email}`);
+    console.log(`[Seed] Super Admin enforced — email: ${email}`);
   } catch (e) {
     console.error('[Seed] Failed to ensure super admin:', e.message);
   }

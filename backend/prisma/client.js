@@ -9,7 +9,9 @@ const globalForPrisma = globalThis;
 
 function createPrismaClient() {
   const client = new PrismaClient({
-    log: process.env.NODE_ENV === 'development' ? ['warn', 'error'] : ['error'],
+    log: process.env.NODE_ENV === 'development' 
+      ? [{ emit: 'event', level: 'error' }, { emit: 'stdout', level: 'warn' }] 
+      : [{ emit: 'event', level: 'error' }],
   });
 
   // Neon serverless closes idle connections — transparently reconnect on next query.
