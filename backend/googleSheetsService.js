@@ -28,7 +28,7 @@ const sanitizeValues = (values) => {
 };
 
 const quoteSheetName = (sheetName) => {
-  const name = String(sheetName || '').trim();
+  const name = String(sheetName || '');
   if (!name) return name;
   if (/[\n\r\t]/.test(name)) throw new Error(`Invalid sheet name contains control characters: ${JSON.stringify(name)}`);
   if (name.startsWith("'") && name.endsWith("'")) return name;

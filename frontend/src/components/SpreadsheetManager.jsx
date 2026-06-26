@@ -175,8 +175,8 @@ export default function SpreadsheetManager() {
   const grantedCount = grantedUserIds.size
 
   return (
-    <div className="max-w-4xl mx-auto space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="w-full max-w-4xl mx-auto h-full flex flex-col overflow-hidden">
+      <div className="flex items-center justify-between shrink-0 mb-6">
         <div>
           <h2 className="text-xl font-bold text-slate-800">Dynamic Spreadsheet Integration</h2>
           <p className="text-sm text-slate-400 mt-1">Connect spreadsheets. Data is automatically synced and cached for performance.</p>
@@ -205,6 +205,7 @@ export default function SpreadsheetManager() {
         </div>
       </div>
 
+      <div className="flex-1 overflow-y-auto min-h-0 space-y-6 pr-2 pb-6">
       {/* Add new spreadsheet */}
       <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
         <h3 className="font-semibold text-slate-700 flex items-center gap-2">
@@ -553,6 +554,7 @@ export default function SpreadsheetManager() {
 
       <div className="bg-blue-50 border border-blue-100 rounded-xl p-4 text-xs text-blue-700">
         <strong>Note:</strong> Make sure the Google Service Account email has <strong>Viewer or Editor</strong> access to any spreadsheet you add here.
+      </div>
       </div>
     </div>
   )

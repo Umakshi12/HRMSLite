@@ -56,13 +56,14 @@ class ProductionDatabase {
       try {
         const allSheets = await this._getAllSheetsFromRegistry();
         const candidateSheets = allSheets.filter((s) => !EXCLUDED_SHEETS.has(String(s.name).toLowerCase()));
+        const allTabs = candidateSheets.flatMap(s => s.tabs || []).filter(t => !EXCLUDED_SHEETS.has(String(t.tab_name).toLowerCase()));
 
-        if (nr === 'super_admin') return candidateSheets.map(s => s.name);
+        if (nr === 'super_admin') return allTabs.map(t => t.tab_name);
 
-        // Admin and users only see explicitly granted sheets
+        // Admin and users only see explicitly granted tabs
         const grants = await prisma.userTabAccess.findMany({ where: { user_id: user.login_id } });
-        const grantedSpreadsheetIds = new Set(grants.map(g => g.spreadsheet_id));
-        return candidateSheets.filter(s => grantedSpreadsheetIds.has(s.id)).map(s => s.name);
+        const grantedTabNames = new Set(grants.map(g => g.tab_name));
+        return allTabs.filter(t => grantedTabNames.has(t.tab_name)).map(t => t.tab_name);
       } catch (err) {
         console.warn(`Falling back to static sheet list: ${err.message}`);
         return FALLBACK_SHEETS;
@@ -196,9 +197,24 @@ class ProductionDatabase {
     const matched = [];
     const unmatched = [];
     for (const name of sheetNames) {
-      const reg = regs.find(ss => ss.name === name || ss.tab_name === name);
-      if (reg) matched.push({ id: reg.id, sheet_id: reg.sheet_id, name });
-      else unmatched.push(name);
+      let found = false;
+      for (const ss of regs) {
+        if (ss.name === name) {
+          // matched spreadsheet name
+          matched.push({ id: ss.id, sheet_id: ss.sheet_id, name: ss.name });
+          found = true;
+          break;
+        } else {
+          // matched tab name
+          const tab = ss.tabs?.find(t => t.tab_name === name);
+          if (tab) {
+            matched.push({ id: ss.id, sheet_id: ss.sheet_id, name: ss.name, tab_name: tab.tab_name });
+            found = true;
+            break;
+          }
+        }
+      }
+      if (!found) unmatched.push(name);
     }
     return { matched, unmatched };
   }
@@ -283,7 +299,8 @@ class ProductionDatabase {
           flatRows = result.data;
         }
       } else {
-        const rows = await sheetsAPI.getSheetDataFull(sheetName);
+        const spreadsheetId = await this.getSpreadsheetIdForTab(sheetName);
+        const rows = await sheetsAPI.getSheetDataFull(sheetName, spreadsheetId);
         flatRows = sheetsAPI.rowsToObjects(rows);
       }
 
@@ -404,10 +421,25 @@ class ProductionDatabase {
   static USER_HEADERS    = ['Login ID', 'Identifier', 'Password', 'Role', 'Status', 'Name', 'Phone', 'Created By', 'Created At', 'Last Login', 'Sheet Access'];
   static ACTIVITY_HEADERS = ['Action', 'Actor', 'Details', 'Timestamp'];
 
+  async _getAuthSpreadsheetId() {
+    if (process.env.AUTH_SPREADSHEET_ID) return process.env.AUTH_SPREADSHEET_ID;
+    
+    try {
+      const authSheet = await prisma.spreadsheet.findFirst({
+        where: { name: ProductionDatabase.AUTH_SHEET, is_active: true }
+      });
+      if (authSheet) return authSheet.sheet_id;
+    } catch (e) {
+      console.warn('[SheetSync] Could not lookup auth sheet ID:', e.message);
+    }
+    
+    return process.env.SPREADSHEET_ID;
+  }
+
   /** Upsert one user row in the HRMS_auth_data > Users tab */
   async _syncUserToSheet(user) {
     try {
-      const spreadsheetId = process.env.SPREADSHEET_ID;
+      const spreadsheetId = await this._getAuthSpreadsheetId();
       await sheetsAPI.ensureSheetExists(ProductionDatabase.USERS_TAB, ProductionDatabase.USER_HEADERS, spreadsheetId);
       const rows = await sheetsAPI.getSheetDataFull(ProductionDatabase.USERS_TAB, spreadsheetId);
       const headers = rows[0] || ProductionDatabase.USER_HEADERS;
@@ -444,7 +476,7 @@ class ProductionDatabase {
   /** Append one row to the HRMS_auth_data > ActivityLog tab */
   async _appendActivityToSheet(action, actor, details) {
     try {
-      const spreadsheetId = process.env.SPREADSHEET_ID;
+      const spreadsheetId = await this._getAuthSpreadsheetId();
       await sheetsAPI.ensureSheetExists(ProductionDatabase.ACTIVITY_TAB, ProductionDatabase.ACTIVITY_HEADERS, spreadsheetId);
       await sheetsAPI.appendRow(`${ProductionDatabase.ACTIVITY_TAB}!A:D`, [action, actor || 'system', details || '', new Date().toISOString()], spreadsheetId);
     } catch (err) {
@@ -813,9 +845,14 @@ class ProductionDatabase {
       // paginate in SQL instead of loading all rows into memory.
       if (unmatched.length === 0 && matched.length > 0) {
         await this._ensureSynced(matched);
-        const ids = matched.map(m => m.id);
+        
+        const whereConditions = matched.map(m => {
+          if (m.tab_name) return { spreadsheet_id: m.id, tab_name: m.tab_name };
+          return { spreadsheet_id: m.id };
+        });
+        const where = { OR: whereConditions };
+
         const nameById = Object.fromEntries(matched.map(m => [m.id, m.name]));
-        const where = { spreadsheet_id: { in: ids } };
         const [total, rows] = await Promise.all([
           prisma.sheetRow.count({ where }),
           prisma.sheetRow.findMany({
@@ -852,22 +889,29 @@ class ProductionDatabase {
       const allRegistered = await this.getRegisteredSpreadsheets();
 
       // 2. Filter by user access — only super_admin sees all active sheets
-      let visibleSheets = [];
+      let visibleSpreadsheets = [];
       if (nr === 'super_admin') {
-        visibleSheets = allRegistered.filter(s => s.is_active);
+        visibleSpreadsheets = allRegistered.filter(s => s.is_active);
       } else if (user) {
         const grants = await prisma.userTabAccess.findMany({ where: { user_id: user.login_id } });
-        const grantedSpreadsheetIds = new Set(grants.map(g => g.spreadsheet_id));
-        visibleSheets = allRegistered.filter(s => s.is_active && grantedSpreadsheetIds.has(s.id));
+        const grantedTabNames = new Set(grants.map(g => g.tab_name));
+        
+        visibleSpreadsheets = allRegistered
+          .filter(s => s.is_active)
+          .map(s => {
+             const allowedTabs = (s.tabs || []).filter(t => grantedTabNames.has(t.tab_name));
+             return { ...s, tabs: allowedTabs };
+          })
+          .filter(s => s.tabs.length > 0);
       }
 
-      const sheets = visibleSheets.map(s => {
-        // Aggregate counts from tabs
-        const tabCount = (s.tabs || []).reduce((acc, t) => acc + (t.row_count || 0), 0);
+      const sheets = visibleSpreadsheets.map(s => {
+        const count = (s.tabs || []).reduce((acc, t) => acc + (t.row_count || 0), 0);
         return {
           name: s.name,
-          count: tabCount,
-          verified: 0 // verified_count not in current schema
+          count: count,
+          tabs: s.tabs.map(t => ({ name: t.tab_name, count: t.row_count || 0 })),
+          verified: 0
         };
       });
 
@@ -1913,11 +1957,23 @@ class ProductionDatabase {
 
       const csvHeaders = Object.keys(records[0]);
 
+      const spreadsheetId = await this.getSpreadsheetIdForTab(sheet);
+      if (!spreadsheetId) {
+        return { success: false, message: 'Spreadsheet not found' };
+      }
+
+      const tabNames = await sheetsAPI.getSheetNames(spreadsheetId);
+      const targetTab = tabNames.includes(sheet) ? sheet : tabNames[0];
+
+      if (!targetTab) {
+        return { success: false, message: 'No tabs found in the spreadsheet' };
+      }
+
       // Use the sheet's existing headers; if the sheet is new, create it with the CSV's own headers
-      let rows = await sheetsAPI.getSheetDataFull(sheet);
+      let rows = await sheetsAPI.getSheetDataFull(targetTab, spreadsheetId);
       if (!rows.length || !rows[0]?.length) {
-        await sheetsAPI.ensureSheetExists(sheet, csvHeaders);
-        rows = await sheetsAPI.getSheetDataFull(sheet);
+        await sheetsAPI.ensureSheetExists(targetTab, csvHeaders, spreadsheetId);
+        rows = await sheetsAPI.getSheetDataFull(targetTab, spreadsheetId);
       }
       if (!rows.length) return { success: false, message: 'Target sheet not found' };
       const headers = rows[0];
@@ -1939,6 +1995,13 @@ class ProductionDatabase {
       const errors = [];
       const rowsToImport = [];
 
+      // Auto-increment Sr. No if header exists
+      const srIdx = this._resolveHeaderIndex(headers, ['Sr.', 'Sr', 'Sr No', 'Sr. No', 'S.No', 'SrNo']);
+      let lastSrNo = 0;
+      if (srIdx >= 0) {
+        lastSrNo = rows.length > 1 ? (parseInt(rows[rows.length - 1][srIdx]) || 0) : 0;
+      }
+
       for (let i = 0; i < records.length; i++) {
         const rec = records[i];
         const row = Array.from({ length: headers.length }, () => '');
@@ -1959,19 +2022,23 @@ class ProductionDatabase {
         }
 
         // Metadata (only fills if the column exists and is currently empty)
-        const addedByIdx = this.resolveHeaderIndex(headers, ['Added By', 'Modified By', 'AddedBy']);
+        const addedByIdx = this._resolveHeaderIndex(headers, ['Added By', 'Modified By', 'AddedBy']);
         if (addedByIdx >= 0 && !row[addedByIdx]) row[addedByIdx] = added_by || 'Bulk Import';
-        const updatedIdx = this.resolveHeaderIndex(headers, ['Last Updated', 'Updated At', 'UpdatedAt']);
+        const updatedIdx = this._resolveHeaderIndex(headers, ['Last Updated', 'Updated At', 'UpdatedAt']);
         if (updatedIdx >= 0 && !row[updatedIdx]) row[updatedIdx] = new Date().toISOString();
+
+        if (srIdx >= 0 && !row[srIdx]) {
+          lastSrNo++;
+          row[srIdx] = lastSrNo;
+        }
 
         rowsToImport.push(row);
         imported++;
       }
 
       if (rowsToImport.length > 0) {
-        await sheetsAPI.appendRows(`${sheet}!A:ZZ`, rowsToImport);
-        const gsId = await this.getSpreadsheetIdForTab(sheet);
-        if (gsId) this.syncSpreadsheet(gsId).catch(() => {});
+        await sheetsAPI.appendRows(`${targetTab}!A:ZZ`, rowsToImport, spreadsheetId);
+        this.syncSpreadsheet(spreadsheetId).catch(() => {});
       }
 
       cache.invalidateSheetData();
@@ -1979,7 +2046,7 @@ class ProductionDatabase {
       return { success: true, imported, skipped, errors: errors.slice(0, 10) };
     } catch (e) {
       console.error('Bulk import error:', e);
-      return { success: false, message: 'Import failed due to a system error.' };
+      return { success: false, message: `Import failed due to a system error: ${e.message}` };
     }
   }
 
@@ -2040,6 +2107,20 @@ Return the matching CSV column name for each spreadsheet column, or empty string
     }
   }
 
+  _resolveHeaderIndex(headers, possibleNames) {
+    const normalize = s => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
+    const normPossible = possibleNames.map(normalize);
+    for (let i = 0; i < headers.length; i++) {
+      if (normPossible.includes(normalize(headers[i]))) return i;
+    }
+    return -1;
+  }
+
+  _setIfHeaderExists(row, headers, possibleNames, value) {
+    const idx = this._resolveHeaderIndex(headers, possibleNames);
+    if (idx >= 0 && !row[idx]) row[idx] = String(value);
+  }
+
   async validateCSVImport(records, mapping, sheetName, user) {
     // mapping is { sheetHeader: csvColumn } — fully dynamic, no hardcoded schema
     const errors = [];
@@ -2066,6 +2147,9 @@ Return the matching CSV column name for each spreadsheet column, or empty string
     try {
       if (!sheetName) throw new Error("Target sheet is required");
 
+      const spreadsheetId = await this.getSpreadsheetIdForTab(sheetName);
+      if (!spreadsheetId) throw new Error("Spreadsheet not found for this tab");
+
       const validation = await this.validateCSVImport(records, mapping, sheetName, user);
       if (!validation.success) return validation;
 
@@ -2079,10 +2163,10 @@ Return the matching CSV column name for each spreadsheet column, or empty string
 
       // Get or create the sheet using CSV headers if it's new
       const csvHeaders = Object.keys(records[0] || {});
-      let rows = await sheetsAPI.getSheetDataFull(sheetName);
+      let rows = await sheetsAPI.getSheetDataFull(sheetName, spreadsheetId);
       if (!rows.length || !rows[0]?.length) {
-        await sheetsAPI.ensureSheetExists(sheetName, csvHeaders);
-        rows = await sheetsAPI.getSheetDataFull(sheetName);
+        await sheetsAPI.ensureSheetExists(sheetName, csvHeaders, spreadsheetId);
+        rows = await sheetsAPI.getSheetDataFull(sheetName, spreadsheetId);
       }
       if (!rows.length) throw new Error('Target sheet not found or empty');
       const headers = rows[0];
@@ -2096,8 +2180,8 @@ Return the matching CSV column name for each spreadsheet column, or empty string
         const batch = validRecords.slice(i, i + BATCH_SIZE);
         const rowsToAppend = [];
 
-        const currentData = await sheetsAPI.getSheetDataFull(sheetName);
-        const srIdx = this.resolveHeaderIndex(headers, ['Sr.', 'Sr', 'Sr No', 'Sr. No']);
+        const currentData = await sheetsAPI.getSheetDataFull(sheetName, spreadsheetId);
+        const srIdx = this._resolveHeaderIndex(headers, ['Sr.', 'Sr', 'Sr No', 'Sr. No']);
         let lastSr = currentData.length > 1 && srIdx >= 0 ? parseInt(currentData[currentData.length - 1][srIdx]) || 0 : 0;
 
         for (const rec of batch) {
@@ -2112,21 +2196,20 @@ Return the matching CSV column name for each spreadsheet column, or empty string
           });
 
           // Metadata
-          this.setIfHeaderExists(row, headers, ['Added By', 'Modified By', 'AddedBy', 'ModifiedBy'], user?.login_id || 'CSV Import');
-          this.setIfHeaderExists(row, headers, ['Last Updated', 'Updated At'], new Date().toISOString());
-          this.setIfHeaderExists(row, headers, ['Since'], today);
+          this._setIfHeaderExists(row, headers, ['Added By', 'Modified By', 'AddedBy', 'ModifiedBy'], user?.login_id || 'CSV Import');
+          this._setIfHeaderExists(row, headers, ['Last Updated', 'Updated At'], new Date().toISOString());
+          this._setIfHeaderExists(row, headers, ['Since'], today);
 
           rowsToAppend.push(row);
           imported++;
         }
 
-        await sheetsAPI.appendRows(`${sheetName}!A:ZZ`, rowsToAppend);
+        await sheetsAPI.appendRows(`${sheetName}!A:ZZ`, rowsToAppend, spreadsheetId);
       }
 
       // Refresh the Postgres cache for this spreadsheet in the background
       if (imported > 0) {
-        const gsId = await this.getSpreadsheetIdForTab(sheetName);
-        if (gsId) this.syncSpreadsheet(gsId).catch(() => {});
+        if (spreadsheetId) this.syncSpreadsheet(spreadsheetId).catch(() => {});
       }
 
       cache.invalidateSheetData();
@@ -2145,15 +2228,17 @@ Return the matching CSV column name for each spreadsheet column, or empty string
 
   // ── Sheet Access Grants ──
   async ensureGrantsSheet() {
+    const spreadsheetId = await this._getAuthSpreadsheetId();
     await sheetsAPI.ensureSheetExists('sheet_access_grants', [
       'sheet_id', 'user_id', 'granted_by', 'granted_at'
-    ]);
+    ], spreadsheetId);
   }
 
   async getUserGrants(user_id) {
     try {
       await this.ensureGrantsSheet();
-      const rows = await sheetsAPI.getSheetData('sheet_access_grants!A:D');
+      const spreadsheetId = await this._getAuthSpreadsheetId();
+      const rows = await sheetsAPI.getSheetData('sheet_access_grants!A:D', spreadsheetId);
       const grants = sheetsAPI.rowsToObjects(rows);
       return grants.filter(g => (g.user_id || g['user id']) === user_id);
     } catch (e) {
@@ -2206,6 +2291,31 @@ Return the matching CSV column name for each spreadsheet column, or empty string
           });
         }
       }
+
+      const spreadsheetId = await this._getAuthSpreadsheetId();
+      await this.ensureGrantsSheet();
+      const rows = await sheetsAPI.getSheetData('sheet_access_grants!A:D', spreadsheetId);
+      const existing = sheetsAPI.rowsToObjects(rows);
+
+      // Remove old grants for this sheet
+      const filtered = existing.filter(g => g.sheet_id !== ss.sheet_id);
+      
+      // Add new grants
+      for (const uid of user_ids) {
+        filtered.push({
+          sheet_id: ss.sheet_id,
+          user_id: uid,
+          granted_by,
+          granted_at: new Date().toISOString()
+        });
+      }
+
+      const newRows = [
+        ['sheet_id', 'user_id', 'granted_by', 'granted_at'],
+        ...filtered.map(g => [g.sheet_id, g.user_id, g.granted_by, g.granted_at])
+      ];
+
+      await sheetsAPI.updateFullSheet('sheet_access_grants', newRows, spreadsheetId);
 
       // Bust per-user sheet-names cache so they see changes on next request
       cache.invalidate(/^sheet-names-/);

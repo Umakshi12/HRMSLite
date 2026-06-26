@@ -61,10 +61,14 @@ export async function apiFetch(urlOrPath, options = {}) {
   
   try {
     // SECURITY: Always include credentials for HttpOnly cookies
+    const headers = { ...authHeaders(), ...options.headers };
+    if (options.body instanceof FormData) {
+      delete headers['Content-Type'];
+    }
     const res = await fetch(url, { 
-      headers: authHeaders(), 
+      ...options,
+      headers, 
       credentials: 'include', 
-      ...options 
     })
     
     // Only handle unauth for protected routes
@@ -217,80 +221,55 @@ export async function updateSheetGrants(sheet_id, user_ids) {
 
 // ── Bulk Import ──
 export async function bulkImportCSV(sheet, file, onProgress) {
-  const token = useStore.getState().token
   const formData = new FormData()
   formData.append('file', file)
   formData.append('sheet', sheet)
-  const res = await fetch(API.BULK_IMPORT, {
+  
+  return await apiFetch(API.BULK_IMPORT, {
     method: 'POST',
-    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     body: formData,
   })
-  handleUnauth(res)
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    throw new Error(body.message || `Import failed: ${res.status}`)
-  }
-  return res.json()
 }
 
-export async function getSheetHeaders(sheet) {
-  return apiFetch(`/import/sheet-headers?sheet=${encodeURIComponent(sheet)}`)
+export async function getSheetHeaders(sheet, tab) {
+  const tabParam = tab ? `&tab=${encodeURIComponent(tab)}` : '';
+  return apiFetch(`/import/sheet-headers?sheet=${encodeURIComponent(sheet)}${tabParam}`)
 }
 
 export async function importPreview(file) {
-  const token = useStore.getState().token
   const formData = new FormData()
   formData.append('file', file)
-  const res = await fetch(API.IMPORT_PREVIEW, {
+  
+  return await apiFetch(API.IMPORT_PREVIEW, {
     method: 'POST',
-    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     body: formData,
   })
-  handleUnauth(res)
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    throw new Error(body.message || `Preview failed: ${res.status}`)
-  }
-  return res.json()
 }
 
-export async function importValidate(file, mapping, sheet) {
-  const token = useStore.getState().token
+export async function importValidate(file, mapping, sheet, tab) {
   const formData = new FormData()
   formData.append('file', file)
   formData.append('mapping', JSON.stringify(mapping))
   formData.append('sheet', sheet)
-  const res = await fetch(API.IMPORT_VALIDATE, {
+  if (tab) formData.append('tab', tab)
+  
+  return await apiFetch(API.IMPORT_VALIDATE, {
     method: 'POST',
-    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     body: formData,
   })
-  handleUnauth(res)
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    throw new Error(body.message || `Validation failed: ${res.status}`)
-  }
-  return res.json()
 }
 
-export async function importFinal(file, mapping, sheet) {
-  const token = useStore.getState().token
+export async function importFinal(file, mapping, sheet, tab) {
   const formData = new FormData()
   formData.append('file', file)
   formData.append('mapping', JSON.stringify(mapping))
   formData.append('sheet', sheet)
-  const res = await fetch(API.IMPORT_CSV, {
+  if (tab) formData.append('tab', tab)
+  
+  return await apiFetch(API.IMPORT_CSV, {
     method: 'POST',
-    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     body: formData,
   })
-  handleUnauth(res)
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    throw new Error(body.message || `Import failed: ${res.status}`)
-  }
-  return res.json()
 }
 
 // ── SSE Search Stream (falls back to client-side Fuse.js in CandidateTable) ──

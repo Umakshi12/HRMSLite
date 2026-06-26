@@ -40,7 +40,7 @@ export default function AdminPanel() {
 
   // For admins: limit grantable sheets to only those they have access to
   const { data: mySummary } = useQuery({
-    queryKey: ['sheet-summary'],
+    queryKey: ['sheet-summary', user?.login_id],
     queryFn: getSheetSummary,
     enabled: !isSuperAdmin,
     placeholderData: { sheets: [] },
@@ -162,7 +162,7 @@ export default function AdminPanel() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="h-full flex flex-col overflow-hidden">
       {/* Credentials modal */}
       {showCreds && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
@@ -219,7 +219,7 @@ export default function AdminPanel() {
         onClose={() => setConfirmToggle(null)} />
 
       {/* Header */}
-      <div className="flex items-center justify-between bg-white border border-slate-200 rounded-xl p-6">
+      <div className="flex items-center justify-between bg-white border border-slate-200 rounded-xl p-6 shrink-0 mb-6">
         <div>
           <h2 className="text-xl font-bold text-slate-800">Admin Panel</h2>
           <p className="text-sm text-slate-400 mt-0.5">
@@ -233,6 +233,7 @@ export default function AdminPanel() {
         </div>
       </div>
 
+      <div className="flex-1 overflow-y-auto min-h-0 space-y-6 pr-2 pb-6">
       {/* Super Admin dashboard */}
       {isSuperAdmin && dashboardData && (
         <div className="grid grid-cols-2 gap-4">
@@ -339,12 +340,12 @@ export default function AdminPanel() {
                     const checked = selectedSheets.includes(s)
                     return (
                       <label key={s}
-                        className={`flex items-center gap-3 p-2.5 rounded-xl border cursor-pointer transition-all ${
+                        className={`relative flex items-center gap-3 p-2.5 rounded-xl border cursor-pointer transition-all ${
                           checked ? 'bg-blue-50 border-blue-200' : 'bg-white border-slate-150 hover:bg-slate-50 hover:border-slate-200'
                         }`}>
                         <input type="checkbox" value={s} {...register('sheet_access')}
                           className="sr-only" />
-                        <div className={`w-4 h-4 rounded flex items-center justify-center shrink-0 transition-all ${
+                        <div className={`w-4 h-4 rounded flex items-center justify-center shrink-0 transition-all z-10 ${
                           checked ? 'bg-blue-600 border-blue-600' : 'border-2 border-slate-300 bg-white'
                         }`}>
                           {checked && <Check className="w-2.5 h-2.5 text-white" strokeWidth={3} />}
@@ -504,6 +505,7 @@ export default function AdminPanel() {
             </div>
           )}
         </div>
+      </div>
       </div>
     </div>
   )

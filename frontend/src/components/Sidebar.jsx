@@ -13,7 +13,7 @@ export default function Sidebar() {
   const isAdmin = rawRole === 'admin' || isSuperAdmin
 
   const { data: summary } = useQuery({
-    queryKey: ['sheet-summary'],
+    queryKey: ['sheet-summary', user?.login_id],
     queryFn: getSheetSummary,
     placeholderData: { sheets: [] },
   })

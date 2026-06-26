@@ -21,7 +21,7 @@ function buildAutoMapping(csvHeaders, sheetHeaders) {
   return mapping;
 }
 
-export default function CSVImportWizard({ onClose }) {
+export default function CSVImportWizard({ onClose, effectiveTab }) {
   const [step, setStep] = useState(1);
   const [file, setFile] = useState(null);
   const [csvHeaders, setCsvHeaders] = useState([]);
@@ -45,7 +45,7 @@ export default function CSVImportWizard({ onClose }) {
     try {
       const [previewData, headersData] = await Promise.all([
         importPreview(selectedFile),
-        getSheetHeaders(activeSheet),
+        getSheetHeaders(activeSheet, effectiveTab),
       ]);
 
       if (!previewData.success) { toast.error(previewData.message || 'Failed to parse CSV'); return; }
@@ -72,7 +72,7 @@ export default function CSVImportWizard({ onClose }) {
 
     setLoading(true);
     try {
-      const data = await importValidate(file, mapping, activeSheet);
+      const data = await importValidate(file, mapping, activeSheet, effectiveTab);
       if (data.success) { setValidation(data); setStep(3); }
       else toast.error(data.message || 'Validation failed');
     } catch (err) {
@@ -85,7 +85,7 @@ export default function CSVImportWizard({ onClose }) {
   const handleImport = async () => {
     setLoading(true);
     try {
-      const data = await importFinal(file, mapping, activeSheet);
+      const data = await importFinal(file, mapping, activeSheet, effectiveTab);
       if (data.success) {
         setImportResult(data);
         setStep(4);

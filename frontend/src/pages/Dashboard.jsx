@@ -32,15 +32,15 @@ export default function Dashboard() {
         <TopBar onAddCandidate={openAdd} toggleSidebar={() => setSidebarOpen(!sidebarOpen)} sidebarOpen={sidebarOpen} />
 
         {currentView === 'admin' && isAdmin ? (
-          <div className="flex-1 overflow-y-auto p-6">
+          <div className="flex-1 overflow-hidden p-6 flex flex-col">
             <AdminPanel />
           </div>
-        ) : currentView === 'import' && isAdmin ? (
-          <div className="flex-1 overflow-y-auto p-6">
+        ) : currentView === 'import' ? (
+          <div className="flex-1 overflow-hidden p-6 flex flex-col">
             <BulkImportPage />
           </div>
         ) : currentView === 'spreadsheets' && isSuperAdmin ? (
-          <div className="flex-1 overflow-y-auto p-6">
+          <div className="flex-1 overflow-hidden p-6 flex flex-col">
             <SpreadsheetManager />
           </div>
         ) : currentView === 'audit' && isAdmin ? (

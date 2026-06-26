@@ -641,7 +641,7 @@ export default function CandidateTable({ onEdit }) {
       {descPopup && <DescriptionPopup text={descPopup} onClose={() => setDescPopup(null)} />}
 
       {/* CSV Import Wizard */}
-      {showImportWizard && <CSVImportWizard onClose={() => setShowImportWizard(false)} />}
+      {showImportWizard && <CSVImportWizard onClose={() => setShowImportWizard(false)} effectiveTab={effectiveTab} />}
     </div>
   )
 }

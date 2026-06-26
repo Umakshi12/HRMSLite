@@ -449,7 +449,7 @@ router.get('/get-filter-options', requireAuth, enforceSheetAccess, asyncHandler(
 }));
 
 // ── Bulk CSV Import ──
-router.post('/bulk-import', requireAuth, enforceSheetAccess, upload.single('file'), asyncHandler(async (req, res) => {
+router.post('/bulk-import', requireAuth, upload.single('file'), enforceSheetAccess, asyncHandler(async (req, res) => {
   const { sheet } = req.body;
   if (!sheet) return res.status(400).json({ success: false, message: 'Target sheet required' });
   if (!req.file) return res.status(400).json({ success: false, message: 'CSV file required' });
@@ -542,12 +542,16 @@ router.get('/cron/sync-spreadsheets', asyncHandler(async (req, res) => {
 
 // Step 0: Get the target sheet's current headers (empty array if sheet is new)
 router.get('/import/sheet-headers', requireAuth, asyncHandler(async (req, res) => {
-  const { sheet } = req.query;
-  if (!sheet) return res.status(400).json({ success: false, headers: [] });
+  const { sheet, tab } = req.query;
+  const targetTab = tab || sheet;
+  if (!targetTab) return res.status(400).json({ success: false, headers: [] });
   try {
-    const rows = await sheetsAPI.getSheetDataFull(sheet);
+    const spreadsheetId = await db.getSpreadsheetIdForTab(targetTab) || await db.getSpreadsheetIdForTab(sheet);
+    if (!spreadsheetId) throw new Error('Spreadsheet not found');
+    const rows = await sheetsAPI.getSheetDataFull(targetTab, spreadsheetId);
     res.json({ success: true, headers: rows[0] || [] });
-  } catch {
+  } catch (err) {
+    console.error('sheet-headers error:', err.message);
     res.json({ success: true, headers: [] });
   }
 }));
@@ -579,8 +583,8 @@ router.post('/import/preview', requireAuth, upload.single('file'), asyncHandler(
 }));
 
 // Step 3: Validate (Check formats and duplicates)
-router.post('/import/validate', requireAuth, enforceSheetAccess, upload.single('file'), asyncHandler(async (req, res) => {
-  const { mapping, sheet } = req.body;
+router.post('/import/validate', requireAuth, upload.single('file'), enforceSheetAccess, asyncHandler(async (req, res) => {
+  const { mapping, sheet, tab } = req.body;
   if (!req.file) return res.status(400).json({ success: false, message: 'CSV file required' });
   
   // SECURITY: MIME type validation
@@ -600,13 +604,14 @@ router.post('/import/validate', requireAuth, enforceSheetAccess, upload.single('
   const csvContent = req.file.buffer.toString('utf8');
   const records = parse(csvContent, { columns: true, skip_empty_lines: true, trim: true });
   
-  const result = await db.validateCSVImport(records, columnMapping, sheet, req.user);
+  const targetTab = tab || sheet;
+  const result = await db.validateCSVImport(records, columnMapping, targetTab, req.user);
   res.json(result);
 }));
 
 // Step 4: Final Import
-router.post('/import/csv', requireAuth, enforceSheetAccess, upload.single('file'), asyncHandler(async (req, res) => {
-  const { mapping, sheet } = req.body;
+router.post('/import/csv', requireAuth, upload.single('file'), enforceSheetAccess, asyncHandler(async (req, res) => {
+  const { mapping, sheet, tab } = req.body;
   if (!req.file) return res.status(400).json({ success: false, message: 'CSV file required' });
   
   // SECURITY: MIME type validation
@@ -626,7 +631,8 @@ router.post('/import/csv', requireAuth, enforceSheetAccess, upload.single('file'
   const csvContent = req.file.buffer.toString('utf8');
   const records = parse(csvContent, { columns: true, skip_empty_lines: true, trim: true });
   
-  const result = await db.processCSVImport(records, columnMapping, sheet, req.user);
+  const targetTab = tab || sheet;
+  const result = await db.processCSVImport(records, columnMapping, targetTab, req.user);
   res.json(result);
 }));
 
