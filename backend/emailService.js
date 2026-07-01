@@ -23,7 +23,8 @@ const getTransporter = () =>
 
 export const getServiceAccountEmail = () => SERVICE_ACCOUNT_EMAIL;
 
-export const sendPasswordResetEmail = async (userEmail, loginId, newPassword, name = '', resetBy = '') => {
+export const sendPasswordResetEmail = async (userEmail, loginId, newPassword, name = '', resetBy = '', originUrl = null) => {
+  const signInLink = originUrl || FRONTEND_URL;
   const html = `
     <div style="font-family:sans-serif;max-width:600px;margin:auto;border:1px solid #e2e8f0;padding:30px;border-radius:12px;">
       <div style="text-align:center;margin-bottom:24px;">
@@ -53,7 +54,7 @@ export const sendPasswordResetEmail = async (userEmail, loginId, newPassword, na
       </div>
 
       <div style="text-align:center;margin:24px 0;">
-        <a href="${FRONTEND_URL}" style="display:inline-block;background:#2563eb;color:white;padding:12px 28px;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px;">
+        <a href="${signInLink}" style="display:inline-block;background:#2563eb;color:white;padding:12px 28px;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px;">
           Sign In Now →
         </a>
       </div>
@@ -88,7 +89,8 @@ export const sendPasswordResetEmail = async (userEmail, loginId, newPassword, na
   }
 };
 
-export const sendWelcomeEmail = async (userEmail, loginId, password, name = '') => {
+export const sendWelcomeEmail = async (userEmail, loginId, password, name = '', originUrl = null) => {
+  const signInLink = originUrl || FRONTEND_URL;
   const sharingSection = SERVICE_ACCOUNT_EMAIL
     ? `
       <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:14px 18px;margin:20px 0;">
@@ -122,7 +124,7 @@ export const sendWelcomeEmail = async (userEmail, loginId, password, name = '') 
       ${sharingSection}
 
       <div style="text-align:center;margin:24px 0;">
-        <a href="${FRONTEND_URL}" style="display:inline-block;background:#2563eb;color:white;padding:12px 28px;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px;">
+        <a href="${signInLink}" style="display:inline-block;background:#2563eb;color:white;padding:12px 28px;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px;">
           Sign In Now →
         </a>
       </div>
@@ -138,7 +140,7 @@ export const sendWelcomeEmail = async (userEmail, loginId, password, name = '') 
     console.log(`Name: ${name}`);
     console.log(`Login ID: ${loginId}`);
     console.log(`Password: ${password}`);
-    console.log(`Login URL: ${FRONTEND_URL}`);
+    console.log(`Login URL: ${signInLink}`);
     if (SERVICE_ACCOUNT_EMAIL) console.log(`Service Account: ${SERVICE_ACCOUNT_EMAIL}`);
     console.log('=====================================\n');
     return { sent: false, mock: true };

@@ -10,9 +10,11 @@ const useStore = create((set, get) => ({
     sessionStorage.removeItem('sheetsync_user')
   },
 
-  // ── Active Sheet ──
+  // ── Active Sheet & Tab ──
   activeSheet: null,
-  setActiveSheet: (sheet) => set({ activeSheet: sheet }),
+  activeTab: null,
+  setActiveSheet: (sheet) => set({ activeSheet: sheet, activeTab: null }),
+  setActiveTab: (tab) => set({ activeTab: tab }),
 
   // ── Search ──
   searchQuery: '',

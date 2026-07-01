@@ -145,10 +145,10 @@ const getColPriority = (key) => COLUMN_PRIORITY[key] || 999;
 
 
 export default function CandidateTable({ onEdit }) {
-  const { user, token, activeSheet, searchQuery, searchAllSheets, filters, setFilters } = useStore()
+  const { user, token, activeSheet, activeTab, setActiveTab, searchQuery, searchAllSheets, filters, setFilters } = useStore()
   const [sorting, setSorting] = useState([{ id: 'last_updated', desc: true }])
   const [page, setPage] = useState(1)
-  const [activeTab, setActiveTab] = useState(null)
+
   const [descPopup, setDescPopup] = useState(null)
   const [showImportWizard, setShowImportWizard] = useState(false)
   const [syncing, setSyncing] = useState(false)
@@ -179,9 +179,7 @@ export default function CandidateTable({ onEdit }) {
     onError: (err) => toast.error(`Failed to remove: ${err.message}`)
   })
 
-  // Reset tab and page when sheet changes
-  useEffect(() => { setActiveTab(null); setPage(1) }, [activeSheet])
-  useEffect(() => { setPage(1) }, [searchAllSheets, searchQuery, JSON.stringify(filters), activeTab])
+  useEffect(() => { setPage(1) }, [searchAllSheets, searchQuery, JSON.stringify(filters), activeTab, activeSheet])
 
   const { data, isLoading, isFetching } = useQuery({
     queryKey: ['sheet-data', activeSheet, searchAllSheets, searchQuery, filters, page, activeTab],
@@ -259,7 +257,8 @@ export default function CandidateTable({ onEdit }) {
       const response = await fetch(url, {
         headers: {
           'Authorization': `Bearer ${token}`
-        }
+        },
+        credentials: 'include'
       })
 
       if (!response.ok) {

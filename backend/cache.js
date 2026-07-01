@@ -86,6 +86,7 @@ class SheetCache {
     this.invalidate(/^sheet:/);
     this.invalidate(/^filter-opts:/);
     this.invalidate(/^sheet-names/);
+    this.invalidate(/^sheet-ss-names/);
     this.invalidate(/^sheet-summary/);
   }
 

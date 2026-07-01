@@ -54,9 +54,10 @@ class ProductionDatabase {
     const cacheKey = nr === 'super_admin' ? 'sheet-names-super-admin' : `sheet-names-${user?.login_id || 'anon'}`;
     return cache.getOrFetch(cacheKey, async () => {
       try {
-        const allSheets = await this._getAllSheetsFromRegistry();
-        const candidateSheets = allSheets.filter((s) => !EXCLUDED_SHEETS.has(String(s.name).toLowerCase()));
-        const allTabs = candidateSheets.flatMap(s => s.tabs || []).filter(t => !EXCLUDED_SHEETS.has(String(t.tab_name).toLowerCase()));
+        const allRegistered = await this.getRegisteredSpreadsheets();
+        const candidateSheets = allRegistered.filter(s => s.is_active && !EXCLUDED_SHEETS.has(String(s.name).toLowerCase()));
+        const allTabs = candidateSheets.flatMap(s => (s.tabs || []).map(t => ({ ...t, spreadsheet_name: s.name })))
+          .filter(t => !EXCLUDED_SHEETS.has(String(t.tab_name).toLowerCase()));
 
         if (nr === 'super_admin') return allTabs.map(t => t.tab_name);
 
@@ -67,6 +68,41 @@ class ProductionDatabase {
       } catch (err) {
         console.warn(`Falling back to static sheet list: ${err.message}`);
         return FALLBACK_SHEETS;
+      }
+    }, 5 * 60 * 1000);
+  }
+
+  async getGrantedTabsObjects(user) {
+    const nr = this.normalizeRole(user?.role);
+    if (nr === 'super_admin') {
+      const regs = await this.getRegisteredSpreadsheets();
+      return regs.flatMap(s => (s.tabs || []).map(t => ({ spreadsheet_id: s.id, tab_name: t.tab_name })));
+    }
+    const accesses = await prisma.userTabAccess.findMany({ where: { user_id: user.login_id }});
+    return accesses.map(a => ({ spreadsheet_id: a.spreadsheet_id, tab_name: a.tab_name }));
+  }
+
+  /**
+   * Returns all spreadsheet display names the user has access to.
+   * Used by enforceSheetAccess to check if a request for spreadsheet "new test" is allowed.
+   */
+  async getCandidateSpreadsheetNames(user) {
+    const nr = this.normalizeRole(user?.role);
+    const cacheKey = nr === 'super_admin' ? 'sheet-ss-names-super-admin' : `sheet-ss-names-${user?.login_id || 'anon'}`;
+    return cache.getOrFetch(cacheKey, async () => {
+      try {
+        const allRegistered = await this.getRegisteredSpreadsheets();
+        const candidateSheets = allRegistered.filter(s => s.is_active && !EXCLUDED_SHEETS.has(String(s.name).toLowerCase()));
+
+        if (nr === 'super_admin') return candidateSheets.map(s => s.name);
+
+        // For admin/user: only spreadsheets where at least one tab is granted
+        const grants = await prisma.userTabAccess.findMany({ where: { user_id: user.login_id } });
+        const grantedSpreadsheetIds = new Set(grants.map(g => g.spreadsheet_id));
+        return candidateSheets.filter(s => grantedSpreadsheetIds.has(s.id)).map(s => s.name);
+      } catch (err) {
+        console.warn(`getCandidateSpreadsheetNames fallback: ${err.message}`);
+        return [];
       }
     }, 5 * 60 * 1000);
   }
@@ -107,16 +143,39 @@ class ProductionDatabase {
 
     // only super_admin bypasses sheet grants — admin and users need explicit grants
     if (nr === 'super_admin') {
-      if (sheet && sheet !== 'all') return [sheet];
-      return this.getCandidateSheets(user);
+      if (sheet && sheet !== 'all') {
+         // Is it a spreadsheet display name?
+         const regs = await this.getRegisteredSpreadsheets();
+         const ss = regs.find(s => s.name.toLowerCase() === sheet.toLowerCase());
+         if (ss) return [{ spreadsheet_id: ss.id, name: ss.name }];
+         return [sheet]; // string fallback
+      }
+      return this.getGrantedTabsObjects(user);
     }
 
-    // Admin and User: restrict to explicitly granted sheets
-    const grantedSheets = await this.getCandidateSheets(user);
-    if (sheet && sheet !== 'all') {
-      return grantedSheets.includes(sheet) ? [sheet] : [];
+    if (!sheet || sheet === 'all') return this.getGrantedTabsObjects(user);
+
+    // Check if `sheet` is a SPREADSHEET DISPLAY NAME (e.g. "new test") —
+    // if so, expand it to all of that spreadsheet's granted tab names.
+    const allRegistered = await this.getRegisteredSpreadsheets();
+    const matchedSS = allRegistered.find(
+      s => s.name.toLowerCase() === sheet.toLowerCase() && s.is_active
+    );
+    if (matchedSS) {
+      const grants = await prisma.userTabAccess.findMany({ where: { user_id: user.login_id, spreadsheet_id: matchedSS.id } });
+      const grantedTabSet = new Set(grants.map(g => g.tab_name));
+      const expandedTabs = (matchedSS.tabs || [])
+        .filter(t => grantedTabSet.has(t.tab_name))
+        .map(t => ({ spreadsheet_id: matchedSS.id, tab_name: t.tab_name }));
+      return expandedTabs;
     }
-    return grantedSheets;
+
+    // Direct tab name match (fallback)
+    const grantedTabs = await this.getGrantedTabsObjects(user);
+    const directMatch = grantedTabs.filter(g => g.tab_name === sheet);
+    if (directMatch.length > 0) return directMatch;
+
+    return [];
   }
 
   // normalizeCandidate REMOVED — all sheet data is now returned as-is from rowsToObjects()
@@ -150,7 +209,7 @@ class ProductionDatabase {
 
   async getSpreadsheetIdForTab(sheetName) {
     const spreadsheets = await this.getRegisteredSpreadsheets();
-    const reg = spreadsheets.find(ss => ss.name === sheetName || ss.tab_name === sheetName);
+    const reg = spreadsheets.find(ss => ss.name === sheetName || (ss.tabs || []).some(t => t.tab_name === sheetName));
     return reg ? reg.sheet_id : undefined;
   }
 
@@ -196,35 +255,67 @@ class ProductionDatabase {
     const regs = await this.getRegisteredSpreadsheets();
     const matched = [];
     const unmatched = [];
-    for (const name of sheetNames) {
-      let found = false;
-      for (const ss of regs) {
-        if (ss.name === name) {
-          // matched spreadsheet name
-          matched.push({ id: ss.id, sheet_id: ss.sheet_id, name: ss.name });
-          found = true;
-          break;
-        } else {
-          // matched tab name
-          const tab = ss.tabs?.find(t => t.tab_name === name);
-          if (tab) {
-            matched.push({ id: ss.id, sheet_id: ss.sheet_id, name: ss.name, tab_name: tab.tab_name });
-            found = true;
-            break;
+    for (const req of sheetNames) {
+      if (typeof req === 'object' && req !== null) {
+        if (req.spreadsheet_id) {
+          const ss = regs.find(s => s.id === req.spreadsheet_id);
+          if (ss) {
+            if (req.tab_name) {
+              const tab = ss.tabs?.find(t => t.tab_name === req.tab_name);
+              if (tab) matched.push({ id: ss.id, sheet_id: ss.sheet_id, name: ss.name, tab_name: tab.tab_name });
+              else unmatched.push(req.tab_name);
+            } else {
+              matched.push({ id: ss.id, sheet_id: ss.sheet_id, name: ss.name });
+            }
+          } else {
+            unmatched.push(req.tab_name || req.name);
           }
         }
+      } else {
+        const name = req;
+        let found = false;
+        for (const ss of regs) {
+          if (ss.name === name) {
+            // matched spreadsheet name
+            matched.push({ id: ss.id, sheet_id: ss.sheet_id, name: ss.name });
+            found = true;
+            break;
+          } else {
+            // matched tab name
+            const tab = ss.tabs?.find(t => t.tab_name === name);
+            if (tab) {
+              matched.push({ id: ss.id, sheet_id: ss.sheet_id, name: ss.name, tab_name: tab.tab_name });
+              found = true;
+              break;
+            }
+          }
+        }
+        if (!found) unmatched.push(name);
       }
-      if (!found) unmatched.push(name);
     }
     return { matched, unmatched };
   }
 
   /** Sync any registered spreadsheet whose Postgres cache is empty (first access) */
   async _ensureSynced(matched) {
-    await Promise.all(matched.map(async (m) => {
-      const count = await prisma.sheetRow.count({ where: { spreadsheet_id: m.id } });
-      if (count === 0) await this.syncSpreadsheet(m.sheet_id);
-    }));
+    if (!matched || matched.length === 0) return;
+    const spreadsheetIds = [...new Set(matched.map(m => m.id))];
+    
+    // Group count query to avoid firing N parallel count queries
+    const counts = await prisma.sheetRow.groupBy({
+      by: ['spreadsheet_id'],
+      where: { spreadsheet_id: { in: spreadsheetIds } },
+      _count: { spreadsheet_id: true }
+    });
+    
+    const countMap = Object.fromEntries(counts.map(c => [c.spreadsheet_id, c._count.spreadsheet_id]));
+    
+    // Sync sequentially to avoid blasting the DB pool and Google API
+    for (const m of matched) {
+      if (!countMap[m.id]) {
+        await this.syncSpreadsheet(m.sheet_id);
+      }
+    }
   }
 
   /**
@@ -281,31 +372,49 @@ class ProductionDatabase {
 
   /** Cached sheet data fetch — returns raw dynamic objects keyed by actual header names */
   async getCachedSheetData(sheetName) {
-    const cacheKey = `sheet:${sheetName}`;
+    const cacheKey = `sheet:${typeof sheetName === 'object' ? JSON.stringify(sheetName) : sheetName}`;
     return cache.getOrFetch(cacheKey, async () => {
       // Check Neon SheetRow cache first
       const spreadsheets = await this.getRegisteredSpreadsheets();
-      const reg = spreadsheets.find(ss => ss.name === sheetName || ss.tab_name === sheetName);
+      let reg = null;
+      let matchedTabName = null;
+
+      if (typeof sheetName === 'object' && sheetName !== null) {
+         reg = spreadsheets.find(ss => ss.id === sheetName.spreadsheet_id);
+         if (reg && sheetName.tab_name) matchedTabName = sheetName.tab_name;
+      } else {
+         reg = spreadsheets.find(ss => ss.name === sheetName);
+         if (!reg) {
+           reg = spreadsheets.find(ss => (ss.tabs || []).some(t => t.tab_name === sheetName));
+           if (reg) matchedTabName = sheetName;
+         }
+      }
 
       let flatRows;
       if (reg) {
         const result = await this.getSheetDataForSpreadsheet(reg.id);
-        // Combine all tabs into one flat array; each row already has _tab_name from the data object
-        flatRows = (result.tabs || []).flatMap(t =>
+        const targetTabs = matchedTabName 
+          ? (result.tabs || []).filter(t => t.name === matchedTabName)
+          : (result.tabs || []);
+
+        // Combine target tabs into one flat array; each row already has _tab_name from the data object
+        flatRows = targetTabs.flatMap(t =>
           t.data.map(row => ({ ...row, _tab_name: t.name }))
         );
-        if (flatRows.length === 0 && result.data?.length) {
+        if (flatRows.length === 0 && !matchedTabName && result.data?.length) {
           // Legacy fallback — single-tab result
           flatRows = result.data;
         }
       } else {
-        const spreadsheetId = await this.getSpreadsheetIdForTab(sheetName);
-        const rows = await sheetsAPI.getSheetDataFull(sheetName, spreadsheetId);
+        const rawSheetName = typeof sheetName === 'object' ? (sheetName.tab_name || sheetName.name) : sheetName;
+        const spreadsheetId = await this.getSpreadsheetIdForTab(rawSheetName);
+        const rows = await sheetsAPI.getSheetDataFull(rawSheetName, spreadsheetId);
         flatRows = sheetsAPI.rowsToObjects(rows);
       }
 
       // Return raw dynamic objects — no normalizeCandidate, preserve all columns
-      return flatRows.map(row => ({ ...row, _sheet: sheetName }));
+      const finalSheetName = typeof sheetName === 'object' ? (sheetName.name || sheetName.tab_name || 'unknown') : sheetName;
+      return flatRows.map(row => ({ ...row, _sheet: finalSheetName }));
     }, 2 * 60 * 1000);
   }
 
@@ -513,13 +622,16 @@ class ProductionDatabase {
       // Grant tab access — resolves both tab names AND spreadsheet display names
       if (data.sheet_access && Array.isArray(data.sheet_access) && data.sheet_access.length > 0) {
         const tabRecords = await this._resolveSheetAccessToTabs(data.sheet_access);
-        await Promise.all(tabRecords.map(t =>
-          prisma.userTabAccess.upsert({
-            where: { user_id_spreadsheet_id_tab_name: { user_id: newLoginId, spreadsheet_id: t.spreadsheet_id, tab_name: t.tab_name } },
-            create: { user_id: newLoginId, spreadsheet_id: t.spreadsheet_id, tab_name: t.tab_name, granted_by: data.created_by || 'Admin' },
-            update: {},
-          })
-        ));
+        if (tabRecords.length > 0) {
+          await prisma.userTabAccess.createMany({
+            data: tabRecords.map(t => ({
+              user_id: newLoginId,
+              spreadsheet_id: t.spreadsheet_id,
+              tab_name: t.tab_name,
+              granted_by: data.created_by || 'Admin'
+            }))
+          });
+        }
       }
 
       // Fire email async — do NOT await so the API responds immediately
@@ -550,6 +662,8 @@ class ProductionDatabase {
       }
 
       cache.invalidate(/^sheet-names-/);
+      cache.invalidate(/^sheet-ss-names-/);
+      cache.invalidate(/^sheet-summary-/);
       await this.logActivity({ action: 'GRANT_ACCESS', actor: data.created_by || 'Admin', details: `Created ${normalizedRole} account for ${data.identifier}` });
 
       // Sync new user to HRMS_auth_data Google Sheet (fire-and-forget)
@@ -679,11 +793,16 @@ class ProductionDatabase {
         await prisma.userTabAccess.deleteMany({ where: { user_id: target_login_id } });
         if (sheet_access.length > 0) {
           const tabRecords = await this._resolveSheetAccessToTabs(sheet_access);
-          await Promise.all(tabRecords.map(t =>
-            prisma.userTabAccess.create({
-              data: { user_id: target_login_id, spreadsheet_id: t.spreadsheet_id, tab_name: t.tab_name, granted_by: updated_by || 'super_admin' },
-            })
-          ));
+          if (tabRecords.length > 0) {
+            await prisma.userTabAccess.createMany({
+              data: tabRecords.map(t => ({
+                user_id: target_login_id,
+                spreadsheet_id: t.spreadsheet_id,
+                tab_name: t.tab_name,
+                granted_by: updated_by || 'super_admin'
+              }))
+            });
+          }
         }
       }
 
@@ -743,6 +862,8 @@ class ProductionDatabase {
       }
 
       cache.invalidate(/^sheet-names-/);
+      cache.invalidate(/^sheet-ss-names-/);
+      cache.invalidate(/^sheet-summary-/);
       await this.logActivity({
         action: 'UPDATE_RIGHTS',
         actor: updated_by,
@@ -802,11 +923,15 @@ class ProductionDatabase {
           status: 'active' 
         }
       });
-      
-      const adminStats = await Promise.all(admins.map(async (a) => {
-        const used = await prisma.user.count({
-          where: { created_by: a.login_id, status: 'active' }
-        });
+      const usageStats = await prisma.user.groupBy({
+        by: ['created_by'],
+        where: { role: 'user', status: 'active', created_by: { in: admins.map(a => a.login_id) } },
+        _count: { created_by: true }
+      });
+      const usageMap = Object.fromEntries(usageStats.map(s => [s.created_by, s._count.created_by]));
+
+      const adminStats = admins.map(a => {
+        const used = usageMap[a.login_id] || 0;
         return {
           login_id: a.login_id,
           identifier: a.identifier,
@@ -816,7 +941,7 @@ class ProductionDatabase {
           quota_pct: Math.round((used / (a.max_user_quota || 1)) * 100),
           created_at: a.created_at,
         };
-      }));
+      });
 
       const totalUsers = await prisma.user.count({
         where: { role: 'user', status: 'active' }
@@ -1250,11 +1375,11 @@ class ProductionDatabase {
 
         if (unmatched.length === 0 && matched.length > 0) {
           await this._ensureSynced(matched);
-          const ids = matched.map(m => m.id);
           const nameById = Object.fromEntries(matched.map(m => [m.id, m.name]));
           const tokens = this._searchTokens(filters.search);
+          const orConditions = matched.map(m => m.tab_name ? { spreadsheet_id: m.id, tab_name: m.tab_name } : { spreadsheet_id: m.id });
           const where = {
-            spreadsheet_id: { in: ids },
+            OR: orConditions,
             ...(tab ? { tab_name: tab } : {}),
             ...(tokens.length ? { AND: tokens.map(t => ({ search_vector: { contains: t } })) } : {}),
           };
@@ -1348,17 +1473,50 @@ class ProductionDatabase {
     }
   }
 
-  // Dynamic filter options — builds from all actual column keys in the data
+  // Dynamic filter options — builds from Postgres SheetRow cache (fast path), falls back to in-memory.
   async getFilterOptions(sheet, user) {
     const cacheKey = `filter-opts:${sheet || 'all'}-${user?.login_id || 'anon'}`;
     return cache.getOrFetch(cacheKey, async () => {
       try {
-        const allData = await this.getAllCandidateData(sheet, user);
-        // Exclude fields that are high-cardinality or unfilterable to avoid blocking event loop & JSON bloat
+        // Exclude fields that are high-cardinality or unfilterable
         const EXCLUDED_FIELDS = /email|phone|mobile|contact|website|web|url|name|desc|note|remark|sr_no|sr|s_no|id|charges|salary|address|since|created_at|updated_at|modified_at|dob|age/i;
-
-        // Collect unique values for every column dynamically
         const columnSets = {};
+
+        // ── FAST PATH: query Postgres SheetRow cache instead of Google Sheets ──
+        const sheetNames = await this.resolveTargetSheets(sheet, user);
+        if (sheetNames.length > 0) {
+          const { matched, unmatched } = await this._resolveRegisteredSpreadsheets(sheetNames);
+          if (matched.length > 0) {
+            const whereConditions = matched.map(m =>
+              m.tab_name ? { spreadsheet_id: m.id, tab_name: m.tab_name } : { spreadsheet_id: m.id }
+            );
+            // Fetch only the data JSON column — no row_index, no search_vector
+            const rows = await prisma.sheetRow.findMany({
+              where: { OR: whereConditions },
+              select: { data: true },
+            });
+            for (const { data } of rows) {
+              for (const [key, val] of Object.entries(data)) {
+                if (key.startsWith('_') || !val || val === '') continue;
+                if (EXCLUDED_FIELDS.test(key)) continue;
+                if (!columnSets[key]) columnSets[key] = new Set();
+                columnSets[key].add(String(val));
+              }
+            }
+            // If we got data from Postgres, return immediately
+            if (Object.keys(columnSets).length > 0 || unmatched.length === 0) {
+              const result = {};
+              for (const [k, v] of Object.entries(columnSets)) {
+                if (v.size > 100) continue;
+                result[k] = Array.from(v).sort();
+              }
+              return result;
+            }
+          }
+        }
+
+        // ── FALLBACK PATH: in-memory (only for unregistered/legacy sheets) ──
+        const allData = await this.getAllCandidateData(sheet, user);
         for (const item of allData) {
           for (const [key, val] of Object.entries(item)) {
             if (key.startsWith('_') || !val || val === '') continue;
@@ -1369,7 +1527,6 @@ class ProductionDatabase {
         }
         const result = {};
         for (const [k, v] of Object.entries(columnSets)) {
-          // If cardinality is greater than 100, do not return filter options (no human can select from 100+ checkboxes)
           if (v.size > 100) continue;
           result[k] = Array.from(v).sort();
         }
@@ -1789,6 +1946,9 @@ class ProductionDatabase {
       const results = [];
       for (const tabName of candidateTabNames) {
         try {
+          // Throttle requests to respect Google Sheets API rate limit (60 reads / min / user)
+          await new Promise(resolve => setTimeout(resolve, 1200));
+          
           const sheetData = await sheetsAPI.getSheetDataFull(tabName, sheet_id);
           if (!sheetData || sheetData.length < 1) {
             console.log(`[Sync] Tab "${tabName}" is empty — skipping`);
@@ -1840,6 +2000,7 @@ class ProductionDatabase {
       await prisma.spreadsheet.update({ where: { id: ss.id }, data: { last_synced_at: new Date() } });
       cache.invalidateSheetData();
       cache.invalidate(/^sheet-names-/);
+      cache.invalidate(/^sheet-ss-names-/);
       return { success: true, results };
     } catch (e) {
       console.error('[Sync] Fatal error:', e);
@@ -1903,7 +2064,7 @@ class ProductionDatabase {
           return {
             name: tab.tab_name,
             headers: effectiveHeaders,
-            data: tabRows.map(r => r.data),
+            data: tabRows.map(r => ({ ...r.data, _tab_name: tab.tab_name })),
           };
         });
 
@@ -1914,7 +2075,7 @@ class ProductionDatabase {
             tabs.push({
               name: tabName,
               headers: keys.map(k => ({ key: k, label: k })),
-              data: tabRows.map(r => r.data),
+              data: tabRows.map(r => ({ ...r.data, _tab_name: tabName })),
             });
           }
         }
@@ -2147,8 +2308,27 @@ Return the matching CSV column name for each spreadsheet column, or empty string
     try {
       if (!sheetName) throw new Error("Target sheet is required");
 
-      const spreadsheetId = await this.getSpreadsheetIdForTab(sheetName);
-      if (!spreadsheetId) throw new Error("Spreadsheet not found for this tab");
+      // ── Resolve sheetName: might be a spreadsheet display name (e.g. "new test")
+      //    rather than an actual Google Sheets tab name (e.g. "Sheet1").
+      //    Look it up in the registry to get the real spreadsheetId + tab name.
+      const allRegistered = await this.getRegisteredSpreadsheets();
+      let spreadsheetId;
+      let resolvedTabName = sheetName; // the actual tab name to use for Sheets API calls
+
+      const matchedSS = allRegistered.find(
+        s => s.name.toLowerCase() === sheetName.toLowerCase() && s.is_active
+      );
+      if (matchedSS) {
+        spreadsheetId = matchedSS.sheet_id;
+        // Use the first registered tab of this spreadsheet as the target tab
+        const firstTab = matchedSS.tabs?.[0]?.tab_name || matchedSS.tab_name;
+        if (firstTab) resolvedTabName = firstTab;
+      } else {
+        // Fall back: treat sheetName as a literal tab name
+        spreadsheetId = await this.getSpreadsheetIdForTab(sheetName);
+      }
+
+      if (!spreadsheetId) throw new Error("Spreadsheet not found for this sheet");
 
       const validation = await this.validateCSVImport(records, mapping, sheetName, user);
       if (!validation.success) return validation;
@@ -2163,10 +2343,10 @@ Return the matching CSV column name for each spreadsheet column, or empty string
 
       // Get or create the sheet using CSV headers if it's new
       const csvHeaders = Object.keys(records[0] || {});
-      let rows = await sheetsAPI.getSheetDataFull(sheetName, spreadsheetId);
+      let rows = await sheetsAPI.getSheetDataFull(resolvedTabName, spreadsheetId);
       if (!rows.length || !rows[0]?.length) {
-        await sheetsAPI.ensureSheetExists(sheetName, csvHeaders, spreadsheetId);
-        rows = await sheetsAPI.getSheetDataFull(sheetName, spreadsheetId);
+        await sheetsAPI.ensureSheetExists(resolvedTabName, csvHeaders, spreadsheetId);
+        rows = await sheetsAPI.getSheetDataFull(resolvedTabName, spreadsheetId);
       }
       if (!rows.length) throw new Error('Target sheet not found or empty');
       const headers = rows[0];
@@ -2180,7 +2360,7 @@ Return the matching CSV column name for each spreadsheet column, or empty string
         const batch = validRecords.slice(i, i + BATCH_SIZE);
         const rowsToAppend = [];
 
-        const currentData = await sheetsAPI.getSheetDataFull(sheetName, spreadsheetId);
+        const currentData = await sheetsAPI.getSheetDataFull(resolvedTabName, spreadsheetId);
         const srIdx = this._resolveHeaderIndex(headers, ['Sr.', 'Sr', 'Sr No', 'Sr. No']);
         let lastSr = currentData.length > 1 && srIdx >= 0 ? parseInt(currentData[currentData.length - 1][srIdx]) || 0 : 0;
 
@@ -2204,7 +2384,7 @@ Return the matching CSV column name for each spreadsheet column, or empty string
           imported++;
         }
 
-        await sheetsAPI.appendRows(`${sheetName}!A:ZZ`, rowsToAppend, spreadsheetId);
+        await sheetsAPI.appendRows(`${resolvedTabName}!A:ZZ`, rowsToAppend, spreadsheetId);
       }
 
       // Refresh the Postgres cache for this spreadsheet in the background
@@ -2216,7 +2396,7 @@ Return the matching CSV column name for each spreadsheet column, or empty string
       await this.logActivity({
         action: 'CSV Import',
         actor: user?.login_id,
-        details: `Imported ${imported} rows to ${sheetName} (${errors.length} skipped)`
+        details: `Imported ${imported} rows to ${resolvedTabName} in "${sheetName}" (${errors.length} skipped)`
       });
 
       return { success: true, imported, failed: 0, skipped: errors.length, errors };
@@ -2319,6 +2499,7 @@ Return the matching CSV column name for each spreadsheet column, or empty string
 
       // Bust per-user sheet-names cache so they see changes on next request
       cache.invalidate(/^sheet-names-/);
+      cache.invalidate(/^sheet-ss-names-/);
       await this.logActivity({ action: 'UPDATE_GRANTS', actor: granted_by, details: `Updated grants for ${ss.sheet_id}: ${user_ids.join(', ')}` });
       return { success: true };
     } catch (err) {

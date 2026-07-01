@@ -9,7 +9,7 @@ import { X, Phone, MessageCircle } from 'lucide-react'
 import { format } from 'date-fns'
 
 export default function CandidateModal({ editData, onClose }) {
-  const { user, activeSheet } = useStore()
+  const { user, activeSheet, activeTab } = useStore()
   const qc = useQueryClient()
   const isEdit = !!editData
 
@@ -38,12 +38,20 @@ export default function CandidateModal({ editData, onClose }) {
     return spreadsheets.find(s => s.name === (editData?._sheet || editData?.sheet || activeSheet) && s.is_active)
   }, [spreadsheets, activeSheet, editData])
 
+  const targetTabName = editData?._tab_name || activeTab || (dynamicSheet?.tabs?.length > 0 ? dynamicSheet.tabs[0].tab_name : (editData?._sheet || editData?.sheet || activeSheet));
+
   const columns = useMemo(() => {
     let baseHeaders = []
-    if (dynamicSheet && dynamicSheet.columns && dynamicSheet.columns.length > 0) {
+    
+    // Find the correct tab inside dynamicSheet.tabs
+    const targetTab = dynamicSheet?.tabs?.find(t => t.tab_name === targetTabName);
+
+    if (targetTab && targetTab.headers && targetTab.headers.length > 0) {
+      baseHeaders = [...targetTab.headers].sort((a, b) => a.index - b.index).map(c => c.name || c)
+    } else if (dynamicSheet && dynamicSheet.columns && dynamicSheet.columns.length > 0) {
       baseHeaders = dynamicSheet.columns.map(c => c.name || c)
     } else if (isEdit && editData) {
-      baseHeaders = Object.keys(editData).filter(k => !['_sheet', 'id', 'spreadsheet_id', 'row_index', 'search_vector'].includes(k))
+      baseHeaders = Object.keys(editData).filter(k => !['_sheet', '_tab_name', 'id', 'spreadsheet_id', 'row_index', 'search_vector'].includes(k))
     } else {
       // Fallback
       baseHeaders = ['Sr.', 'Name', 'Mobile No', 'Address', 'State', 'Area', 'Experience', 'Education', 'DOB', 'Age', 'Gender', 'Salary', 'Verification', 'Description', 'Since', 'Added By', 'Last Updated']
@@ -56,8 +64,16 @@ export default function CandidateModal({ editData, onClose }) {
 
   // Prepare default values
   const defaultValues = useMemo(() => {
-    if (isEdit) {
+    if (isEdit && editData) {
+      const normalizeKey = (k) => String(k || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
       const vals = { ...editData, sheet: editData._sheet || editData.sheet || activeSheet || 'Japa' }
+      
+      columns.forEach(col => {
+        const normCol = normalizeKey(col)
+        if (editData[normCol] !== undefined && vals[col] === undefined) {
+          vals[col] = editData[normCol]
+        }
+      })
       return vals
     }
     // Default values for new candidate based on known columns
@@ -75,9 +91,13 @@ export default function CandidateModal({ editData, onClose }) {
     return vals
   }, [isEdit, editData, activeSheet, columns, today])
 
-  const { register, handleSubmit, setValue, watch, formState: { errors } } = useForm({
+  const { register, handleSubmit, setValue, watch, reset, formState: { errors } } = useForm({
     defaultValues
   })
+
+  useEffect(() => {
+    reset(defaultValues)
+  }, [defaultValues, reset])
 
   // Age calculation helper based on finding a dob column
   const dobField = columns.find(c => String(c).toLowerCase().includes('dob') || String(c).toLowerCase().includes('date of birth'))
@@ -92,10 +112,10 @@ export default function CandidateModal({ editData, onClose }) {
 
   // Update sheet if it changes in edit mode, or keep it synced with activeSheet for new mode
   useEffect(() => {
-    if (!isEdit && activeSheet) {
-      setValue('sheet', activeSheet)
+    if (!isEdit && targetTabName) {
+      setValue('sheet', targetTabName)
     }
-  }, [activeSheet, isEdit, setValue])
+  }, [targetTabName, isEdit, setValue])
 
   const addMut = useMutation({
     mutationFn: (data) => {

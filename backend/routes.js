@@ -7,6 +7,7 @@ import { verifyToken, generateToken } from './auth.js';
 import { validateRequest, loginSchema, addCandidateSchema, editCandidateSchema } from './validation.js';
 import multer from 'multer';
 import { parse } from 'csv-parse/sync';
+import * as sheetsAPI from './googleSheetsService.js';
 
 import { getAuthUrl, handleCallback } from './googleAuthService.js';
 import { getServiceAccountEmail, sendPasswordResetEmail } from './emailService.js';
@@ -135,14 +136,22 @@ const enforceSheetAccess = asyncHandler(async (req, res, next) => {
 
   // Special case: 'all' or searching across all sheets
   if (sheetName === 'all' || req.body.search_all_sheets) {
-    // getCandidateSheets already filters for users, so we can allow it
+    // resolveTargetSheets already filters for users, so we can allow it
     // but the actual data fetching will only return granted ones.
     return next();
   }
 
-  // Check if user has explicit grant
-  const grantedSheets = await db.getCandidateSheets(user);
-  if (grantedSheets.includes(sheetName)) return next();
+  // Check if user has access by TAB name OR SPREADSHEET DISPLAY NAME
+  const [grantedTabNames, grantedSpreadsheetNames] = await Promise.all([
+    db.getCandidateSheets(user),
+    db.getCandidateSpreadsheetNames(user),
+  ]);
+
+  if (grantedTabNames.includes(sheetName) || grantedSpreadsheetNames.some(
+    n => n.toLowerCase() === sheetName.toLowerCase()
+  )) {
+    return next();
+  }
 
   res.status(403).json({ 
     success: false, 
@@ -210,6 +219,7 @@ router.post('/forgot-password', forgotPasswordLimiter, asyncHandler(async (req, 
         result.new_password,
         user.name || '',
         'Self-service reset',
+        req.get('origin') || req.get('referer')
       ).catch(e => console.error('[Email] Forgot-password email failed:', e.message));
     }
   } catch (e) {
@@ -543,10 +553,28 @@ router.get('/cron/sync-spreadsheets', asyncHandler(async (req, res) => {
 // Step 0: Get the target sheet's current headers (empty array if sheet is new)
 router.get('/import/sheet-headers', requireAuth, asyncHandler(async (req, res) => {
   const { sheet, tab } = req.query;
-  const targetTab = tab || sheet;
-  if (!targetTab) return res.status(400).json({ success: false, headers: [] });
+  if (!sheet && !tab) return res.status(400).json({ success: false, headers: [] });
   try {
-    const spreadsheetId = await db.getSpreadsheetIdForTab(targetTab) || await db.getSpreadsheetIdForTab(sheet);
+    // Resolve: `sheet` might be a spreadsheet display name (e.g. "new test")
+    // rather than a real tab name. Look it up in the registry first.
+    const allSpreadsheets = await db.getRegisteredSpreadsheets();
+    let targetTab = tab || sheet;
+    let spreadsheetId;
+
+    // Try matching by spreadsheet display name first
+    const matchedSS = allSpreadsheets.find(
+      s => s.name.toLowerCase() === sheet.toLowerCase() && s.is_active
+    );
+    if (matchedSS) {
+      spreadsheetId = matchedSS.sheet_id;
+      // Use the first tab of that spreadsheet as the target
+      targetTab = matchedSS.tab_name || (matchedSS.tabs?.[0]?.tab_name) || targetTab;
+    } else {
+      // Fall back: treat `sheet` as a literal tab name
+      spreadsheetId = await db.getSpreadsheetIdForTab(targetTab)
+                   || await db.getSpreadsheetIdForTab(sheet);
+    }
+
     if (!spreadsheetId) throw new Error('Spreadsheet not found');
     const rows = await sheetsAPI.getSheetDataFull(targetTab, spreadsheetId);
     res.json({ success: true, headers: rows[0] || [] });
@@ -721,6 +749,7 @@ router.post('/reset-password', requireAuth, isAdminOrSuper, resetPasswordLimiter
         result.new_password,
         target.name || '',
         req.user?.login_id,
+        req.get('origin') || req.get('referer')
       ).catch(e => console.error('[Email] Reset email failed silently:', e.message));
     }
   }
@@ -851,6 +880,7 @@ router.post('/send-credentials', requireAuth, isAdminOrSuper, asyncHandler(async
       targetUser.login_id,
       reset.new_password,
       targetUser.name || '',
+      req.get('origin') || req.get('referer')
     );
     if (result.mock) {
       console.log(`[send-credentials] Mock mode — credentials logged to console for ${targetUser.login_id}`);
